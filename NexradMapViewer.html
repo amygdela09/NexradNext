@@ -242,6 +242,35 @@
             100% { opacity: 1; }
         }
 
+        /* Available times list */
+        .time-list {
+            max-height: 150px;
+            overflow-y: auto;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+            padding: 5px;
+            margin-top: 10px;
+        }
+
+        .time-item {
+            padding: 5px 8px;
+            margin: 2px 0;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .time-item:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .time-item.selected {
+            background: rgba(100, 181, 246, 0.3);
+            border: 1px solid #64b5f6;
+        }
+
         /* Mobile responsiveness */
         @media (max-width: 768px) {
             .container {
@@ -294,16 +323,6 @@
                 </div>
                 
                 <div class="form-group">
-                    <label for="startTime">Start Time:</label>
-                    <input type="time" id="startTime" value="12:00">
-                </div>
-                
-                <div class="form-group">
-                    <label for="endTime">End Time:</label>
-                    <input type="time" id="endTime" value="18:00">
-                </div>
-                
-                <div class="form-group">
                     <label for="product">Product:</label>
                     <select id="product">
                         <option value="reflectivity">Reflectivity (dBZ)</option>
@@ -318,15 +337,41 @@
                     </label>
                 </div>
                 
+                <div id="timeRangeControls" style="display: none;">
+                    <div class="time-inputs">
+                        <div class="form-group">
+                            <label for="startTime">Start Time:</label>
+                            <input type="time" id="startTime" value="12:00">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="endTime">End Time:</label>
+                            <input type="time" id="endTime" value="18:00">
+                        </div>
+                    </div>
+                </div>
+                
                 <button id="loadData" onclick="loadRadarData()">
                     📡 Load Radar Data
+                </button>
+                
+                <button id="findTimes" onclick="findAvailableTimes()" style="display: none; margin-top: 10px;">
+                    🔍 Find Available Times
+                </button>
+            </div>
+            
+            <div class="control-group" id="availableTimesPanel" style="display: none;">
+                <h3>⏰ Available Times</h3>
+                <div id="availableTimesList" class="time-list"></div>
+                <button id="loadSelectedTimes" onclick="loadSelectedTimes()" style="margin-top: 10px;">
+                    📥 Load Selected Times
                 </button>
             </div>
             
             <div class="control-group" id="animationControls" style="display: none;">
                 <h3>🎬 Animation Controls</h3>
                 <div class="form-group">
-                    <button id="playPause" onclick="toggleAnimation()">▶️ Play</button>
+                    <button id="playPause" class="animation-btn" onclick="toggleAnimation()">▶️ Play</button>
                 </div>
                 
                 <div class="form-group">
@@ -349,11 +394,17 @@
                         Loop Animation
                     </label>
                 </div>
+                
+                <div class="form-group">
+                    <button class="animation-btn" onclick="exportAnimation()">
+                        💾 Export Animation
+                    </button>
+                </div>
             </div>
             
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <div>Processing radar data...</div>
+                <div id="loadingText">Processing radar data...</div>
             </div>
             
             <div id="status"></div>
@@ -376,6 +427,13 @@
                     <label>
                         <input type="checkbox" id="showStorm" checked onchange="toggleStormTracking()"> 
                         Show Storm Tracking
+                    </label>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="showRange" onchange="toggleRangeRings()"> 
+                        Show Range Rings
                     </label>
                 </div>
             </div>
@@ -407,12 +465,15 @@
         let map;
         let radarLayer = null;
         let radarMarker = null;
+        let rangeRings = null;
         let currentRadarData = null;
         let animationFrames = [];
         let currentFrame = 0;
         let isPlaying = false;
         let animationInterval = null;
         let animationSpeed = 1;
+        let availableTimes = [];
+        let selectedTimes = [];
 
         // Initialize the map
         function initMap() {
@@ -426,13 +487,13 @@
             // Add base layers
             const baseLayers = {
                 'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DigitalGlobe, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, and the GIS User Community'
+                    attribution: 'Tiles &copy; Esri'
                 }),
                 'Street': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    attribution: '&copy; OpenStreetMap contributors'
                 }),
                 'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+                    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
                 })
             };
 
@@ -451,19 +512,147 @@
         // Toggle animation mode controls
         function toggleAnimationMode() {
             const animationMode = document.getElementById('animationMode').checked;
-            const animationControls = document.getElementById('animationControls');
-            const timeInputs = document.querySelectorAll('#startTime, #endTime');
+            const timeRangeControls = document.getElementById('timeRangeControls');
+            const findTimesBtn = document.getElementById('findTimes');
             
             if (animationMode) {
-                animationControls.style.display = 'block';
-                timeInputs.forEach(input => input.style.display = 'block');
-                showStatus('Animation mode enabled. Set time range for radar sequence.', 'info');
+                timeRangeControls.style.display = 'block';
+                findTimesBtn.style.display = 'block';
+                showStatus('Animation mode enabled. Set time range or find available times.', 'info');
             } else {
-                animationControls.style.display = 'none';
-                timeInputs.forEach(input => input.style.display = 'none');
+                timeRangeControls.style.display = 'none';
+                findTimesBtn.style.display = 'none';
+                document.getElementById('availableTimesPanel').style.display = 'none';
+                document.getElementById('animationControls').style.display = 'none';
                 stopAnimation();
                 showStatus('Single frame mode enabled.', 'info');
             }
+        }
+
+        // Find available times for the selected date and station
+        function findAvailableTimes() {
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('date').value;
+            
+            showLoading(true, 'Searching for available radar times...');
+            
+            // Simulate searching for available times
+            setTimeout(() => {
+                availableTimes = generateAvailableTimes(station, date);
+                displayAvailableTimes(availableTimes);
+                showLoading(false);
+                showStatus(`Found ${availableTimes.length} available radar scans for ${station} on ${date}`, 'success');
+            }, 2000);
+        }
+
+        // Generate mock available times (in real implementation, this would query the NOAA archive)
+        function generateAvailableTimes(station, date) {
+            const times = [];
+            const numScans = Math.floor(Math.random() * 144) + 50; // 50-194 scans per day
+            
+            for (let i = 0; i < numScans; i++) {
+                const hour = Math.floor(Math.random() * 24);
+                const minute = Math.floor(Math.random() * 12) * 5; // 5-minute intervals
+                const timeStr = `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+                
+                // Add some weather intensity simulation
+                const intensity = Math.random();
+                const hasWeather = intensity > 0.7;
+                
+                times.push({
+                    time: timeStr,
+                    hour: hour,
+                    minute: minute,
+                    timestamp: hour * 60 + minute,
+                    hasWeather: hasWeather,
+                    intensity: intensity,
+                    selected: false
+                });
+            }
+            
+            // Sort by time
+            return times.sort((a, b) => a.timestamp - b.timestamp);
+        }
+
+        // Display available times in the UI
+        function displayAvailableTimes(times) {
+            const panel = document.getElementById('availableTimesPanel');
+            const list = document.getElementById('availableTimesList');
+            
+            list.innerHTML = '';
+            
+            times.forEach((timeInfo, index) => {
+                const div = document.createElement('div');
+                div.className = 'time-item';
+                div.onclick = () => toggleTimeSelection(index);
+                
+                const weatherIcon = timeInfo.hasWeather ? '🌧️' : '☁️';
+                const intensityBar = '█'.repeat(Math.floor(timeInfo.intensity * 5));
+                
+                div.innerHTML = `
+                    <span>${timeInfo.time}</span>
+                    <span style="float: right;">${weatherIcon} ${intensityBar}</span>
+                `;
+                
+                list.appendChild(div);
+            });
+            
+            panel.style.display = 'block';
+        }
+
+        // Toggle time selection
+        function toggleTimeSelection(index) {
+            availableTimes[index].selected = !availableTimes[index].selected;
+            
+            const timeItems = document.querySelectorAll('.time-item');
+            if (availableTimes[index].selected) {
+                timeItems[index].classList.add('selected');
+                selectedTimes.push(availableTimes[index]);
+            } else {
+                timeItems[index].classList.remove('selected');
+                selectedTimes = selectedTimes.filter(t => t.timestamp !== availableTimes[index].timestamp);
+            }
+            
+            updateSelectedTimesCount();
+        }
+
+        // Update selected times count
+        function updateSelectedTimesCount() {
+            const loadBtn = document.getElementById('loadSelectedTimes');
+            const count = selectedTimes.length;
+            
+            if (count > 0) {
+                loadBtn.textContent = `📥 Load ${count} Selected Times`;
+                loadBtn.disabled = false;
+            } else {
+                loadBtn.textContent = '📥 Load Selected Times';
+                loadBtn.disabled = true;
+            }
+        }
+
+        // Load selected times for animation
+        function loadSelectedTimes() {
+            if (selectedTimes.length === 0) {
+                showStatus('Please select at least one time frame', 'error');
+                return;
+            }
+            
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('date').value;
+            const product = document.getElementById('product').value;
+            
+            showLoading(true, `Loading ${selectedTimes.length} radar frames...`);
+            
+            // Sort selected times
+            selectedTimes.sort((a, b) => a.timestamp - b.timestamp);
+            
+            // Simulate loading animation frames
+            setTimeout(() => {
+                const frames = generateAnimationFramesFromTimes(selectedTimes, station, date, product);
+                setupAnimation(frames);
+                showLoading(false);
+                showStatus(`Animation ready: ${frames.length} frames loaded`, 'success');
+            }, 3000);
         }
 
         // Load radar data (single frame or animation sequence)
@@ -477,7 +666,7 @@
 
             showLoading(true);
             
-            if (animationMode) {
+            if (animationMode && selectedTimes.length === 0) {
                 showStatus(`Loading radar animation for ${station} from ${startTime} to ${endTime}...`, 'info');
                 // Simulate loading multiple frames
                 setTimeout(() => {
@@ -486,6 +675,8 @@
                     showLoading(false);
                     showStatus(`Loaded ${frames.length} animation frames for ${station}`, 'success');
                 }, 4000);
+            } else if (animationMode && selectedTimes.length > 0) {
+                loadSelectedTimes();
             } else {
                 showStatus('Downloading and processing NEXRAD data...', 'info');
                 // Simulate single frame processing
@@ -496,6 +687,18 @@
                     showStatus(`Successfully loaded ${product} data for ${station} on ${date}`, 'success');
                 }, 3000);
             }
+        }
+
+        // Generate animation frames from selected times
+        function generateAnimationFramesFromTimes(times, station, date, product) {
+            return times.map((timeInfo, index) => {
+                const frameData = generateMockRadarData(station, date, product, timeInfo.hour, timeInfo.minute);
+                frameData.time = timeInfo.time;
+                frameData.frameIndex = index;
+                frameData.hasWeather = timeInfo.hasWeather;
+                frameData.intensity = timeInfo.intensity;
+                return frameData;
+            });
         }
 
         // Generate animation frames (mock data for demo)
@@ -635,49 +838,10 @@
         // Update time display
         function updateTimeDisplay(timeStr) {
             document.getElementById('currentTime').textContent = timeStr;
-        }, USDA, USGS, AeroGRID, IGN, and the GIS User Community'
-                }),
-                'Street': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                }),
-                'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-                })
-            };
-
-            // Add default layer
-            baseLayers['Dark'].addTo(map);
-
-            // Add layer control
-            L.control.layers(baseLayers).addTo(map);
-
-            // Add scale
-            L.control.scale().addTo(map);
-
-            showStatus('Map initialized. Select a radar station and date to load data.', 'info');
-        }
-
-        // Simulate radar data loading (since we can't actually run Python from the browser)
-        function loadRadarData() {
-            const station = document.getElementById('station').value;
-            const date = document.getElementById('date').value;
-            const product = document.getElementById('product').value;
-
-            showLoading(true);
-            showStatus('Downloading and processing NEXRAD data...', 'info');
-
-            // Simulate processing time
-            setTimeout(() => {
-                // Mock radar data for demonstration
-                const mockData = generateMockRadarData(station, date, product);
-                displayRadarData(mockData);
-                showLoading(false);
-                showStatus(`Successfully loaded ${product} data for ${station} on ${date}`, 'success');
-            }, 3000);
         }
 
         // Generate mock radar data for demonstration
-        function generateMockRadarData(station, date, product) {
+        function generateMockRadarData(station, date, product, hour = null, minute = null) {
             // Station coordinates (approximate)
             const stationCoords = {
                 'KTLX': [35.3331, -97.2783],
@@ -692,305 +856,4 @@
                 'KHTX': [34.9306, -86.0833]
             };
 
-            const coords = stationCoords[station] || [35.0, -97.0];
-            
-            return {
-                station: station,
-                date: date,
-                product: product,
-                radar_lat: coords[0],
-                radar_lon: coords[1],
-                max_range_km: 230,
-                data_min: product === 'reflectivity' ? -32 : -30,
-                data_max: product === 'reflectivity' ? 80 : 30,
-                field_name: product
-            };
-        }
-
-        // Display radar data on map
-        function displayRadarData(data) {
-            currentRadarData = data;
-
-            // Remove existing radar layer
-            if (radarLayer) {
-                map.removeLayer(radarLayer);
-            }
-            if (radarMarker) {
-                map.removeLayer(radarMarker);
-            }
-
-            // Create mock radar visualization using colored circles
-            const radarCenter = [data.radar_lat, data.radar_lon];
-            
-            // Add radar site marker
-            radarMarker = L.marker(radarCenter, {
-                icon: L.divIcon({
-                    className: 'radar-icon',
-                    html: '📡',
-                    iconSize: [30, 30],
-                    iconAnchor: [15, 15]
-                })
-            }).addTo(map);
-
-            radarMarker.bindPopup(`
-                <strong>${data.station} Radar Site</strong><br>
-                Product: ${data.field_name}<br>
-                Date: ${data.date}<br>
-                Range: ${data.max_range_km} km
-            `);
-
-            // Create mock radar rings with weather patterns
-            const rings = [];
-            const numRings = 8;
-            const maxRadius = data.max_range_km * 1000; // Convert to meters
-
-            for (let i = 1; i <= numRings; i++) {
-                const radius = (maxRadius / numRings) * i;
-                const radiusKm = radius / 1000;
-                
-                // Create weather pattern based on ring
-                let intensity, color, opacity;
-                
-                if (data.field_name === 'reflectivity') {
-                    // Simulate storm cells
-                    if (i >= 3 && i <= 6) {
-                        intensity = Math.random() * 60 + 20; // 20-80 dBZ
-                        color = getReflectivityColor(intensity);
-                        opacity = 0.6 + (intensity / 80) * 0.4;
-                    } else {
-                        intensity = Math.random() * 30 - 10; // -10 to 20 dBZ
-                        color = getReflectivityColor(intensity);
-                        opacity = 0.2 + Math.random() * 0.3;
-                    }
-                } else {
-                    // Velocity data
-                    intensity = (Math.random() - 0.5) * 60; // -30 to 30 m/s
-                    color = getVelocityColor(intensity);
-                    opacity = 0.3 + Math.random() * 0.4;
-                }
-
-                // Create irregular shape instead of perfect circle
-                const circle = L.circle(radarCenter, {
-                    radius: radius,
-                    fillColor: color,
-                    color: color,
-                    weight: 1,
-                    opacity: opacity * 0.7,
-                    fillOpacity: opacity
-                });
-
-                rings.push(circle);
-            }
-
-            // Group all rings into a layer group
-            radarLayer = L.layerGroup(rings).addTo(map);
-
-            // Zoom to radar coverage area
-            map.setView(radarCenter, 8);
-
-            // Update radar info panel
-            updateRadarInfo(data);
-            
-            // Update legend
-            updateLegend(data.field_name);
-        }
-
-        // Get color for reflectivity values
-        function getReflectivityColor(dbz) {
-            if (dbz < -10) return '#404040';
-            if (dbz < 5) return '#9999ff';
-            if (dbz < 15) return '#00ff00';
-            if (dbz < 25) return '#ffff00';
-            if (dbz < 35) return '#ff9900';
-            if (dbz < 45) return '#ff0000';
-            if (dbz < 55) return '#cc0099';
-            return '#ffffff';
-        }
-
-        // Get color for velocity values
-        function getVelocityColor(velocity) {
-            // Negative velocities (towards radar) in shades of green
-            // Positive velocities (away from radar) in shades of red
-            if (velocity < -20) return '#004d00';
-            if (velocity < -10) return '#009900';
-            if (velocity < -5) return '#00ff00';
-            if (velocity < 0) return '#99ff99';
-            if (velocity < 5) return '#ffcccc';
-            if (velocity < 10) return '#ff9999';
-            if (velocity < 20) return '#ff0000';
-            return '#990000';
-        }
-
-        // Update radar information panel
-        function updateRadarInfo(data) {
-            const infoPanel = document.getElementById('radarInfo');
-            const details = document.getElementById('radarDetails');
-            
-            details.innerHTML = `
-                <div><strong>Station:</strong> ${data.station}</div>
-                <div><strong>Date:</strong> ${data.date}</div>
-                <div><strong>Product:</strong> ${data.field_name}</div>
-                <div><strong>Location:</strong> ${data.radar_lat.toFixed(4)}°, ${data.radar_lon.toFixed(4)}°</div>
-                <div><strong>Range:</strong> ${data.max_range_km} km</div>
-                <div><strong>Data Range:</strong> ${data.data_min.toFixed(1)} - ${data.data_max.toFixed(1)} ${data.field_name === 'reflectivity' ? 'dBZ' : 'm/s'}</div>
-            `;
-            
-            infoPanel.style.display = 'block';
-        }
-
-        // Update legend based on product type
-        function updateLegend(product) {
-            const legendScale = document.getElementById('legendScale');
-            const legendLabels = document.querySelector('.legend-labels');
-            
-            if (product === 'reflectivity') {
-                // Reflectivity color scale
-                legendScale.innerHTML = `
-                    <div style="flex: 1; background: #404040;"></div>
-                    <div style="flex: 1; background: #9999ff;"></div>
-                    <div style="flex: 1; background: #00ff00;"></div>
-                    <div style="flex: 1; background: #ffff00;"></div>
-                    <div style="flex: 1; background: #ff9900;"></div>
-                    <div style="flex: 1; background: #ff0000;"></div>
-                    <div style="flex: 1; background: #cc0099;"></div>
-                    <div style="flex: 1; background: #ffffff;"></div>
-                `;
-                legendLabels.innerHTML = `
-                    <span>-32</span>
-                    <span>Light</span>
-                    <span>Moderate</span>
-                    <span>Heavy</span>
-                    <span>80</span>
-                `;
-                document.querySelector('.legend-title').textContent = 'Reflectivity Scale (dBZ)';
-            } else {
-                // Velocity color scale
-                legendScale.innerHTML = `
-                    <div style="flex: 1; background: #004d00;"></div>
-                    <div style="flex: 1; background: #009900;"></div>
-                    <div style="flex: 1; background: #00ff00;"></div>
-                    <div style="flex: 1; background: #99ff99;"></div>
-                    <div style="flex: 1; background: #ffcccc;"></div>
-                    <div style="flex: 1; background: #ff9999;"></div>
-                    <div style="flex: 1; background: #ff0000;"></div>
-                    <div style="flex: 1; background: #990000;"></div>
-                `;
-                legendLabels.innerHTML = `
-                    <span>-30</span>
-                    <span>Towards</span>
-                    <span>0</span>
-                    <span>Away</span>
-                    <span>30</span>
-                `;
-                document.querySelector('.legend-title').textContent = 'Velocity Scale (m/s)';
-            }
-        }
-
-        // Update radar layer opacity
-        function updateOpacity(value) {
-            document.getElementById('opacityValue').textContent = Math.round(value * 100) + '%';
-            
-            if (radarLayer) {
-                radarLayer.eachLayer(function(layer) {
-                    const currentOpacity = layer.options.fillOpacity;
-                    layer.setStyle({
-                        fillOpacity: currentOpacity * value,
-                        opacity: currentOpacity * value * 0.7
-                    });
-                });
-            }
-        }
-
-        // Toggle storm tracking (placeholder functionality)
-        function toggleStormTracking() {
-            const enabled = document.getElementById('showStorm').checked;
-            
-            if (enabled && currentRadarData) {
-                showStatus('Storm tracking enabled - velocity analysis active', 'info');
-                // Add storm tracking vectors or analysis here
-            } else {
-                showStatus('Storm tracking disabled', 'info');
-            }
-        }
-
-        // Show loading animation
-        function showLoading(show) {
-            const loading = document.getElementById('loading');
-            const button = document.getElementById('loadData');
-            
-            if (show) {
-                loading.style.display = 'block';
-                button.disabled = true;
-                button.textContent = 'Processing...';
-            } else {
-                loading.style.display = 'none';
-                button.disabled = false;
-                button.textContent = '📡 Load Radar Data';
-            }
-        }
-
-        // Show status messages
-        function showStatus(message, type = 'info') {
-            const status = document.getElementById('status');
-            status.className = `status ${type}`;
-            status.textContent = message;
-            status.style.display = 'block';
-            
-            // Auto-hide after 5 seconds for success messages
-            if (type === 'success') {
-                setTimeout(() => {
-                    status.style.display = 'none';
-                }, 5000);
-            }
-        }
-
-        // Handle window resize
-        window.addEventListener('resize', function() {
-            if (map) {
-                setTimeout(() => {
-                    map.invalidateSize();
-                }, 100);
-            }
-        });
-
-        // Initialize the application when page loads
-        document.addEventListener('DOMContentLoaded', function() {
-            initMap();
-            
-            // Set default date to yesterday (data availability)
-            const yesterday = new Date();
-            yesterday.setDate(yesterday.getDate() - 1);
-            document.getElementById('date').value = yesterday.toISOString().split('T')[0];
-        });
-
-        // Add some realistic weather animation
-        function animateWeatherPattern() {
-            if (!radarLayer) return;
-            
-            let animationFrame = 0;
-            
-            function animate() {
-                if (radarLayer) {
-                    radarLayer.eachLayer(function(layer, index) {
-                        const phase = (animationFrame + index * 0.5) * 0.1;
-                        const intensity = 0.5 + 0.3 * Math.sin(phase);
-                        
-                        const baseOpacity = layer.options.fillOpacity || 0.5;
-                        layer.setStyle({
-                            fillOpacity: baseOpacity * intensity
-                        });
-                    });
-                    
-                    animationFrame++;
-                    setTimeout(() => requestAnimationFrame(animate), 500);
-                }
-            }
-            
-            animate();
-        }
-
-        // Start weather animation after 2 seconds
-        setTimeout(animateWeatherPattern, 2000);
-    </script>
-</body>
-</html>
+            const
