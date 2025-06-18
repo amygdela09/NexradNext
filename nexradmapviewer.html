@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXRAD Weather Radar Viewer</title>
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    
+    <!-- Custom CSS -->
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 300px;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #64b5f6;
+            text-align: center;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .control-group h3 {
+            margin-bottom: 10px;
+            color: #81c784;
+            font-size: 1rem;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+            color: #e0e0e0;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 0.9rem;
+        }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #64b5f6;
+            box-shadow: 0 0 5px rgba(100, 181, 246, 0.5);
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: linear-gradient(45deg, #4caf50, #45a049);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+
+        button:hover {
+            background: linear-gradient(45deg, #45a049, #4caf50);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .legend {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            color: #333;
+            font-size: 0.8rem;
+        }
+
+        .legend-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #2c3e50;
+        }
+
+        .legend-scale {
+            display: flex;
+            height: 20px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+        }
+
+        .legend-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .status.info {
+            background: rgba(33, 150, 243, 0.2);
+            border: 1px solid #2196f3;
+        }
+
+        .status.success {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid #4caf50;
+        }
+
+        .status.error {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid #f44336;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 3px solid #64b5f6;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .radar-info {
+            font-size: 0.8rem;
+            line-height: 1.4;
+        }
+
+        .radar-info div {
+            margin: 5px 0;
+        }
+
+        .animation-btn {
+            background: linear-gradient(45deg, #2196f3, #1976d2);
+            margin: 5px 0;
+        }
+
+        .animation-btn:hover {
+            background: linear-gradient(45deg, #1976d2, #2196f3);
+        }
+
+        .animation-btn:disabled {
+            background: #666;
+        }
+
+        #frameSlider {
+            width: 100%;
+            margin: 10px 0;
+        }
+
+        #currentTime {
+            text-align: center;
+            font-weight: bold;
+            color: #64b5f6;
+            margin-top: 5px;
+        }
+
+        .time-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        /* Animation indicator */
+        .playing {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: 350px;
+                order: 2;
+            }
+            
+            .map-container {
+                height: calc(100vh - 350px);
+                order: 1;
+            }
+            
+            .time-inputs {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>🌩️ NEXRAD Radar</h1>
+            
+            <div class="control-group">
+                <h3>📡 Radar Configuration</h3>
+                <div class="form-group">
+                    <label for="station">Radar Station:</label>
+                    <select id="station">
+                        <option value="KTLX">KTLX - Oklahoma City, OK</option>
+                        <option value="KOUN">KOUN - Norman, OK</option>
+                        <option value="KFWS">KFWS - Dallas/Fort Worth, TX</option>
+                        <option value="KEWX">KEWX - Austin/San Antonio, TX</option>
+                        <option value="KHGX">KHGX - Houston, TX</option>
+                        <option value="KLCH">KLCH - Lake Charles, LA</option>
+                        <option value="KLIX">KLIX - New Orleans, LA</option>
+                        <option value="KMOB">KMOB - Mobile, AL</option>
+                        <option value="KBMX">KBMX - Birmingham, AL</option>
+                        <option value="KHTX">KHTX - Huntsville, AL</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="date">Date:</label>
+                    <input type="date" id="date" value="2024-05-20">
+                </div>
+                
+                <div class="form-group">
+                    <label for="startTime">Start Time:</label>
+                    <input type="time" id="startTime" value="12:00">
+                </div>
+                
+                <div class="form-group">
+                    <label for="endTime">End Time:</label>
+                    <input type="time" id="endTime" value="18:00">
+                </div>
+                
+                <div class="form-group">
+                    <label for="product">Product:</label>
+                    <select id="product">
+                        <option value="reflectivity">Reflectivity (dBZ)</option>
+                        <option value="velocity">Velocity (m/s)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="animationMode" onchange="toggleAnimationMode()"> 
+                        Download Time Series for Animation
+                    </label>
+                </div>
+                
+                <button id="loadData" onclick="loadRadarData()">
+                    📡 Load Radar Data
+                </button>
+            </div>
+            
+            <div class="control-group" id="animationControls" style="display: none;">
+                <h3>🎬 Animation Controls</h3>
+                <div class="form-group">
+                    <button id="playPause" onclick="toggleAnimation()">▶️ Play</button>
+                </div>
+                
+                <div class="form-group">
+                    <label for="frameSlider">Time Frame:</label>
+                    <input type="range" id="frameSlider" min="0" max="0" value="0" 
+                           oninput="setAnimationFrame(this.value)">
+                    <div id="currentTime">--:--</div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="animationSpeed">Animation Speed:</label>
+                    <input type="range" id="animationSpeed" min="0.5" max="5" step="0.5" value="1" 
+                           oninput="setAnimationSpeed(this.value)">
+                    <span id="speedValue">1x</span>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="loopAnimation" checked> 
+                        Loop Animation
+                    </label>
+                </div>
+            </div>
+            
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div>Processing radar data...</div>
+            </div>
+            
+            <div id="status"></div>
+            
+            <div class="control-group" id="radarInfo" style="display: none;">
+                <h3>📊 Radar Information</h3>
+                <div class="radar-info" id="radarDetails"></div>
+            </div>
+            
+            <div class="control-group">
+                <h3>🎨 Display Options</h3>
+                <div class="form-group">
+                    <label for="opacity">Radar Opacity:</label>
+                    <input type="range" id="opacity" min="0" max="1" step="0.1" value="0.7" 
+                           oninput="updateOpacity(this.value)">
+                    <span id="opacityValue">70%</span>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="showStorm" checked onchange="toggleStormTracking()"> 
+                        Show Storm Tracking
+                    </label>
+                </div>
+            </div>
+            
+            <!-- Legend -->
+            <div class="legend">
+                <div class="legend-title">Reflectivity Scale (dBZ)</div>
+                <div class="legend-scale" id="legendScale"></div>
+                <div class="legend-labels">
+                    <span>-32</span>
+                    <span>Light</span>
+                    <span>Moderate</span>
+                    <span>Heavy</span>
+                    <span>80</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="map-container">
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <!-- Leaflet JavaScript -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    
+    <script>
+        // Global variables
+        let map;
+        let radarLayer = null;
+        let radarMarker = null;
+        let currentRadarData = null;
+        let animationFrames = [];
+        let currentFrame = 0;
+        let isPlaying = false;
+        let animationInterval = null;
+        let animationSpeed = 1;
+
+        // Initialize the map
+        function initMap() {
+            // Create map centered on central US
+            map = L.map('map', {
+                center: [35.0, -97.5],
+                zoom: 6,
+                zoomControl: true
+            });
+
+            // Add base layers
+            const baseLayers = {
+                'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, DigitalGlobe, GeoEye, Earthstar Geographics, CNES/Airbus DS, USDA, USGS, AeroGRID, IGN, and the GIS User Community'
+                }),
+                'Street': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                }),
+                'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+                })
+            };
+
+            // Add default layer
+            baseLayers['Dark'].addTo(map);
+
+            // Add layer control
+            L.control.layers(baseLayers).addTo(map);
+
+            // Add scale
+            L.control.scale().addTo(map);
+
+            showStatus('Map initialized. Select a radar station and date to load data.', 'info');
+        }
+
+        // Toggle animation mode controls
+        function toggleAnimationMode() {
+            const animationMode = document.getElementById('animationMode').checked;
+            const animationControls = document.getElementById('animationControls');
+            const timeInputs = document.querySelectorAll('#startTime, #endTime');
+            
+            if (animationMode) {
+                animationControls.style.display = 'block';
+                timeInputs.forEach(input => input.style.display = 'block');
+                showStatus('Animation mode enabled. Set time range for radar sequence.', 'info');
+            } else {
+                animationControls.style.display = 'none';
+                timeInputs.forEach(input => input.style.display = 'none');
+                stopAnimation();
+                showStatus('Single frame mode enabled.', 'info');
+            }
+        }
+
+        // Load radar data (single frame or animation sequence)
+        function loadRadarData() {
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('date').value;
+            const product = document.getElementById('product').value;
+            const animationMode = document.getElementById('animationMode').checked;
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+
+            showLoading(true);
+            
+            if (animationMode) {
+                showStatus(`Loading radar animation for ${station} from ${startTime} to ${endTime}...`, 'info');
+                // Simulate loading multiple frames
+                setTimeout(() => {
+                    const frames = generateAnimationFrames(station, date, startTime, endTime, product);
+                    setupAnimation(frames);
+                    showLoading(false);
+                    showStatus(`Loaded ${frames.length} animation frames for ${station}`, 'success');
+                }, 4000);
+            } else {
+                showStatus('Downloading and processing NEXRAD data...', 'info');
+                // Simulate single frame processing
+                setTimeout(() => {
+                    const mockData = generateMockRadarData(station, date, product);
+                    displayRadarData(mockData);
+                    showLoading(false);
+                    showStatus(`Successfully loaded ${product} data for ${station} on ${date}`, 'success');
+                }, 3000);
+            }
+        }
+
+        // Generate animation frames (mock data for demo)
+        function generateAnimationFrames(station, date, startTime, endTime, product) {
+            const frames = [];
+            const [startHour, startMinute] = startTime.split(':').map(Number);
+            const [endHour, endMinute] = endTime.split(':').map(Number);
+            
+            let currentHour = startHour;
+            let currentMinute = startMinute;
+            
+            // Generate frames every 10 minutes
+            while (currentHour < endHour || (currentHour === endHour && currentMinute <= endMinute)) {
+                const timeStr = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
+                const frameData = generateMockRadarData(station, date, product, currentHour, currentMinute);
+                frameData.time = timeStr;
+                frameData.frameIndex = frames.length;
+                frames.push(frameData);
+                
+                // Advance time by 10 minutes
+                currentMinute += 10;
+                if (currentMinute >= 60) {
+                    currentMinute = 0;
+                    currentHour++;
+                }
+                
+                // Limit to reasonable number of frames
+                if (frames.length >= 36) break; // Max 6 hours of data
+            }
+            
+            return frames;
+        }
+
+        // Setup animation controls and data
+        function setupAnimation(frames) {
+            animationFrames = frames;
+            currentFrame = 0;
+            
+            // Setup frame slider
+            const frameSlider = document.getElementById('frameSlider');
+            frameSlider.max = frames.length - 1;
+            frameSlider.value = 0;
+            
+            // Display first frame
+            displayRadarData(frames[0]);
+            updateTimeDisplay(frames[0].time);
+            
+            // Enable animation controls
+            document.getElementById('animationControls').style.display = 'block';
+            
+            showStatus(`Animation ready: ${frames.length} frames loaded`, 'success');
+        }
+
+        // Toggle animation play/pause
+        function toggleAnimation() {
+            if (animationFrames.length === 0) {
+                showStatus('No animation data loaded', 'error');
+                return;
+            }
+            
+            const playButton = document.getElementById('playPause');
+            
+            if (isPlaying) {
+                stopAnimation();
+                playButton.textContent = '▶️ Play';
+                playButton.classList.remove('playing');
+            } else {
+                startAnimation();
+                playButton.textContent = '⏸️ Pause';
+                playButton.classList.add('playing');
+            }
+        }
+
+        // Start animation
+        function startAnimation() {
+            if (animationFrames.length === 0) return;
+            
+            isPlaying = true;
+            const frameRate = 1000 / animationSpeed; // milliseconds per frame
+            
+            animationInterval = setInterval(() => {
+                currentFrame++;
+                
+                if (currentFrame >= animationFrames.length) {
+                    if (document.getElementById('loopAnimation').checked) {
+                        currentFrame = 0;
+                    } else {
+                        stopAnimation();
+                        document.getElementById('playPause').textContent = '▶️ Play';
+                        document.getElementById('playPause').classList.remove('playing');
+                        return;
+                    }
+                }
+                
+                displayRadarData(animationFrames[currentFrame]);
+                updateAnimationControls();
+            }, frameRate);
+        }
+
+        // Stop animation
+        function stopAnimation() {
+            isPlaying = false;
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+            }
+        }
+
+        // Set specific animation frame
+        function setAnimationFrame(frameIndex) {
+            if (animationFrames.length === 0) return;
+            
+            currentFrame = parseInt(frameIndex);
+            displayRadarData(animationFrames[currentFrame]);
+            updateTimeDisplay(animationFrames[currentFrame].time);
+        }
+
+        // Set animation speed
+        function setAnimationSpeed(speed) {
+            animationSpeed = parseFloat(speed);
+            document.getElementById('speedValue').textContent = speed + 'x';
+            
+            // Restart animation with new speed if currently playing
+            if (isPlaying) {
+                stopAnimation();
+                startAnimation();
+            }
+        }
+
+        // Update animation controls
+        function updateAnimationControls() {
+            const frameSlider = document.getElementById('frameSlider');
+            frameSlider.value = currentFrame;
+            updateTimeDisplay(animationFrames[currentFrame].time);
+        }
+
+        // Update time display
+        function updateTimeDisplay(timeStr) {
+            document.getElementById('currentTime').textContent = timeStr;
+        }, USDA, USGS, AeroGRID, IGN, and the GIS User Community'
+                }),
+                'Street': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                }),
+                'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+                })
+            };
+
+            // Add default layer
+            baseLayers['Dark'].addTo(map);
+
+            // Add layer control
+            L.control.layers(baseLayers).addTo(map);
+
+            // Add scale
+            L.control.scale().addTo(map);
+
+            showStatus('Map initialized. Select a radar station and date to load data.', 'info');
+        }
+
+        // Simulate radar data loading (since we can't actually run Python from the browser)
+        function loadRadarData() {
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('date').value;
+            const product = document.getElementById('product').value;
+
+            showLoading(true);
+            showStatus('Downloading and processing NEXRAD data...', 'info');
+
+            // Simulate processing time
+            setTimeout(() => {
+                // Mock radar data for demonstration
+                const mockData = generateMockRadarData(station, date, product);
+                displayRadarData(mockData);
+                showLoading(false);
+                showStatus(`Successfully loaded ${product} data for ${station} on ${date}`, 'success');
+            }, 3000);
+        }
+
+        // Generate mock radar data for demonstration
+        function generateMockRadarData(station, date, product) {
+            // Station coordinates (approximate)
+            const stationCoords = {
+                'KTLX': [35.3331, -97.2783],
+                'KOUN': [35.2369, -97.2444],
+                'KFWS': [32.5730, -97.3031],
+                'KEWX': [29.7039, -98.0281],
+                'KHGX': [29.4719, -95.0792],
+                'KLCH': [30.1253, -93.2158],
+                'KLIX': [30.3369, -89.8256],
+                'KMOB': [30.6794, -88.2400],
+                'KBMX': [33.1722, -86.7697],
+                'KHTX': [34.9306, -86.0833]
+            };
+
+            const coords = stationCoords[station] || [35.0, -97.0];
+            
+            return {
+                station: station,
+                date: date,
+                product: product,
+                radar_lat: coords[0],
+                radar_lon: coords[1],
+                max_range_km: 230,
+                data_min: product === 'reflectivity' ? -32 : -30,
+                data_max: product === 'reflectivity' ? 80 : 30,
+                field_name: product
+            };
+        }
+
+        // Display radar data on map
+        function displayRadarData(data) {
+            currentRadarData = data;
+
+            // Remove existing radar layer
+            if (radarLayer) {
+                map.removeLayer(radarLayer);
+            }
+            if (radarMarker) {
+                map.removeLayer(radarMarker);
+            }
+
+            // Create mock radar visualization using colored circles
+            const radarCenter = [data.radar_lat, data.radar_lon];
+            
+            // Add radar site marker
+            radarMarker = L.marker(radarCenter, {
+                icon: L.divIcon({
+                    className: 'radar-icon',
+                    html: '📡',
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                })
+            }).addTo(map);
+
+            radarMarker.bindPopup(`
+                <strong>${data.station} Radar Site</strong><br>
+                Product: ${data.field_name}<br>
+                Date: ${data.date}<br>
+                Range: ${data.max_range_km} km
+            `);
+
+            // Create mock radar rings with weather patterns
+            const rings = [];
+            const numRings = 8;
+            const maxRadius = data.max_range_km * 1000; // Convert to meters
+
+            for (let i = 1; i <= numRings; i++) {
+                const radius = (maxRadius / numRings) * i;
+                const radiusKm = radius / 1000;
+                
+                // Create weather pattern based on ring
+                let intensity, color, opacity;
+                
+                if (data.field_name === 'reflectivity') {
+                    // Simulate storm cells
+                    if (i >= 3 && i <= 6) {
+                        intensity = Math.random() * 60 + 20; // 20-80 dBZ
+                        color = getReflectivityColor(intensity);
+                        opacity = 0.6 + (intensity / 80) * 0.4;
+                    } else {
+                        intensity = Math.random() * 30 - 10; // -10 to 20 dBZ
+                        color = getReflectivityColor(intensity);
+                        opacity = 0.2 + Math.random() * 0.3;
+                    }
+                } else {
+                    // Velocity data
+                    intensity = (Math.random() - 0.5) * 60; // -30 to 30 m/s
+                    color = getVelocityColor(intensity);
+                    opacity = 0.3 + Math.random() * 0.4;
+                }
+
+                // Create irregular shape instead of perfect circle
+                const circle = L.circle(radarCenter, {
+                    radius: radius,
+                    fillColor: color,
+                    color: color,
+                    weight: 1,
+                    opacity: opacity * 0.7,
+                    fillOpacity: opacity
+                });
+
+                rings.push(circle);
+            }
+
+            // Group all rings into a layer group
+            radarLayer = L.layerGroup(rings).addTo(map);
+
+            // Zoom to radar coverage area
+            map.setView(radarCenter, 8);
+
+            // Update radar info panel
+            updateRadarInfo(data);
+            
+            // Update legend
+            updateLegend(data.field_name);
+        }
+
+        // Get color for reflectivity values
+        function getReflectivityColor(dbz) {
+            if (dbz < -10) return '#404040';
+            if (dbz < 5) return '#9999ff';
+            if (dbz < 15) return '#00ff00';
+            if (dbz < 25) return '#ffff00';
+            if (dbz < 35) return '#ff9900';
+            if (dbz < 45) return '#ff0000';
+            if (dbz < 55) return '#cc0099';
+            return '#ffffff';
+        }
+
+        // Get color for velocity values
+        function getVelocityColor(velocity) {
+            // Negative velocities (towards radar) in shades of green
+            // Positive velocities (away from radar) in shades of red
+            if (velocity < -20) return '#004d00';
+            if (velocity < -10) return '#009900';
+            if (velocity < -5) return '#00ff00';
+            if (velocity < 0) return '#99ff99';
+            if (velocity < 5) return '#ffcccc';
+            if (velocity < 10) return '#ff9999';
+            if (velocity < 20) return '#ff0000';
+            return '#990000';
+        }
+
+        // Update radar information panel
+        function updateRadarInfo(data) {
+            const infoPanel = document.getElementById('radarInfo');
+            const details = document.getElementById('radarDetails');
+            
+            details.innerHTML = `
+                <div><strong>Station:</strong> ${data.station}</div>
+                <div><strong>Date:</strong> ${data.date}</div>
+                <div><strong>Product:</strong> ${data.field_name}</div>
+                <div><strong>Location:</strong> ${data.radar_lat.toFixed(4)}°, ${data.radar_lon.toFixed(4)}°</div>
+                <div><strong>Range:</strong> ${data.max_range_km} km</div>
+                <div><strong>Data Range:</strong> ${data.data_min.toFixed(1)} - ${data.data_max.toFixed(1)} ${data.field_name === 'reflectivity' ? 'dBZ' : 'm/s'}</div>
+            `;
+            
+            infoPanel.style.display = 'block';
+        }
+
+        // Update legend based on product type
+        function updateLegend(product) {
+            const legendScale = document.getElementById('legendScale');
+            const legendLabels = document.querySelector('.legend-labels');
+            
+            if (product === 'reflectivity') {
+                // Reflectivity color scale
+                legendScale.innerHTML = `
+                    <div style="flex: 1; background: #404040;"></div>
+                    <div style="flex: 1; background: #9999ff;"></div>
+                    <div style="flex: 1; background: #00ff00;"></div>
+                    <div style="flex: 1; background: #ffff00;"></div>
+                    <div style="flex: 1; background: #ff9900;"></div>
+                    <div style="flex: 1; background: #ff0000;"></div>
+                    <div style="flex: 1; background: #cc0099;"></div>
+                    <div style="flex: 1; background: #ffffff;"></div>
+                `;
+                legendLabels.innerHTML = `
+                    <span>-32</span>
+                    <span>Light</span>
+                    <span>Moderate</span>
+                    <span>Heavy</span>
+                    <span>80</span>
+                `;
+                document.querySelector('.legend-title').textContent = 'Reflectivity Scale (dBZ)';
+            } else {
+                // Velocity color scale
+                legendScale.innerHTML = `
+                    <div style="flex: 1; background: #004d00;"></div>
+                    <div style="flex: 1; background: #009900;"></div>
+                    <div style="flex: 1; background: #00ff00;"></div>
+                    <div style="flex: 1; background: #99ff99;"></div>
+                    <div style="flex: 1; background: #ffcccc;"></div>
+                    <div style="flex: 1; background: #ff9999;"></div>
+                    <div style="flex: 1; background: #ff0000;"></div>
+                    <div style="flex: 1; background: #990000;"></div>
+                `;
+                legendLabels.innerHTML = `
+                    <span>-30</span>
+                    <span>Towards</span>
+                    <span>0</span>
+                    <span>Away</span>
+                    <span>30</span>
+                `;
+                document.querySelector('.legend-title').textContent = 'Velocity Scale (m/s)';
+            }
+        }
+
+        // Update radar layer opacity
+        function updateOpacity(value) {
+            document.getElementById('opacityValue').textContent = Math.round(value * 100) + '%';
+            
+            if (radarLayer) {
+                radarLayer.eachLayer(function(layer) {
+                    const currentOpacity = layer.options.fillOpacity;
+                    layer.setStyle({
+                        fillOpacity: currentOpacity * value,
+                        opacity: currentOpacity * value * 0.7
+                    });
+                });
+            }
+        }
+
+        // Toggle storm tracking (placeholder functionality)
+        function toggleStormTracking() {
+            const enabled = document.getElementById('showStorm').checked;
+            
+            if (enabled && currentRadarData) {
+                showStatus('Storm tracking enabled - velocity analysis active', 'info');
+                // Add storm tracking vectors or analysis here
+            } else {
+                showStatus('Storm tracking disabled', 'info');
+            }
+        }
+
+        // Show loading animation
+        function showLoading(show) {
+            const loading = document.getElementById('loading');
+            const button = document.getElementById('loadData');
+            
+            if (show) {
+                loading.style.display = 'block';
+                button.disabled = true;
+                button.textContent = 'Processing...';
+            } else {
+                loading.style.display = 'none';
+                button.disabled = false;
+                button.textContent = '📡 Load Radar Data';
+            }
+        }
+
+        // Show status messages
+        function showStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.className = `status ${type}`;
+            status.textContent = message;
+            status.style.display = 'block';
+            
+            // Auto-hide after 5 seconds for success messages
+            if (type === 'success') {
+                setTimeout(() => {
+                    status.style.display = 'none';
+                }, 5000);
+            }
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', function() {
+            if (map) {
+                setTimeout(() => {
+                    map.invalidateSize();
+                }, 100);
+            }
+        });
+
+        // Initialize the application when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initMap();
+            
+            // Set default date to yesterday (data availability)
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            document.getElementById('date').value = yesterday.toISOString().split('T')[0];
+        });
+
+        // Add some realistic weather animation
+        function animateWeatherPattern() {
+            if (!radarLayer) return;
+            
+            let animationFrame = 0;
+            
+            function animate() {
+                if (radarLayer) {
+                    radarLayer.eachLayer(function(layer, index) {
+                        const phase = (animationFrame + index * 0.5) * 0.1;
+                        const intensity = 0.5 + 0.3 * Math.sin(phase);
+                        
+                        const baseOpacity = layer.options.fillOpacity || 0.5;
+                        layer.setStyle({
+                            fillOpacity: baseOpacity * intensity
+                        });
+                    });
+                    
+                    animationFrame++;
+                    setTimeout(() => requestAnimationFrame(animate), 500);
+                }
+            }
+            
+            animate();
+        }
+
+        // Start weather animation after 2 seconds
+        setTimeout(animateWeatherPattern, 2000);
+    </script>
+</body>
+</html>
