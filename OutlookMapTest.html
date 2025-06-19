@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPC Severe Weather Outlook Map</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #2c3e50, #3498db);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .controls {
+            padding: 20px;
+            background: #ecf0f1;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        label {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        input, select, button {
+            padding: 8px 12px;
+            border: 1px solid #bdc3c7;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        
+        button {
+            background: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #2980b9;
+        }
+        
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+        
+        #map {
+            width: 100%;
+            height: 600px;
+        }
+        
+        .legend {
+            background: white;
+            padding: 15px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin: 10px;
+            max-width: 200px;
+        }
+        
+        .legend h4 {
+            margin: 0 0 10px 0;
+            color: #2c3e50;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+            font-size: 12px;
+        }
+        
+        .legend-color {
+            width: 20px;
+            height: 15px;
+            margin-right: 8px;
+            border: 1px solid #333;
+        }
+        
+        .status {
+            margin: 10px 20px;
+            padding: 10px;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        
+        .status.loading {
+            background: #e8f4fd;
+            color: #2980b9;
+        }
+        
+        .status.error {
+            background: #fadbd8;
+            color: #c0392b;
+        }
+        
+        .status.success {
+            background: #d5f4e6;
+            color: #27ae60;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌪️ SPC Severe Weather Outlook Map</h1>
+            <p>Storm Prediction Center Day 1 Convective and Tornado Outlooks</p>
+        </div>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="dateInput">Date:</label>
+                <input type="date" id="dateInput" />
+            </div>
+            
+            <div class="control-group">
+                <label for="outlookType">Outlook Type:</label>
+                <select id="outlookType">
+                    <option value="categorical">Categorical (General Severe)</option>
+                    <option value="tornado">Tornado</option>
+                    <option value="wind">Wind</option>
+                    <option value="hail">Hail</option>
+                </select>
+            </div>
+            
+            <button id="loadOutlook">Load Outlook</button>
+        </div>
+        
+        <div id="status" class="status" style="display: none;"></div>
+        
+        <div id="map"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([39.8283, -98.5795], 4); // Center on continental US
+        
+        // Add base layer
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        
+        // Color schemes for different risk levels
+        const colorSchemes = {
+            categorical: {
+                'TSTM': '#66bb6a',     // Green - Thunderstorm
+                'MRGL': '#42a5f5',     // Blue - Marginal
+                'SLGT': '#ffee58',     // Yellow - Slight
+                'ENH': '#ff9800',      // Orange - Enhanced
+                'MDT': '#f44336',      // Red - Moderate
+                'HIGH': '#9c27b0'      // Purple - High
+            },
+            tornado: {
+                '2': '#66bb6a',        // Green - 2%
+                '5': '#ffee58',        // Yellow - 5%
+                '10': '#ff9800',       // Orange - 10%
+                '15': '#f44336',       // Red - 15%
+                '30': '#9c27b0',       // Purple - 30%
+                '45': '#8e24aa',       // Dark Purple - 45%
+                '60': '#7b1fa2'        // Darker Purple - 60%
+            },
+            wind: {
+                '5': '#66bb6a',        // Green - 5%
+                '15': '#ffee58',       // Yellow - 15%
+                '30': '#ff9800',       // Orange - 30%
+                '45': '#f44336',       // Red - 45%
+                '60': '#9c27b0'        // Purple - 60%
+            },
+            hail: {
+                '5': '#66bb6a',        // Green - 5%
+                '15': '#ffee58',       // Yellow - 15%
+                '30': '#ff9800',       // Orange - 30%
+                '45': '#f44336',       // Red - 45%
+                '60': '#9c27b0'        // Purple - 60%
+            }
+        };
+        
+        let currentLayers = [];
+        let legend = null;
+        
+        // Set default date to today
+        document.getElementById('dateInput').valueAsDate = new Date();
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+        
+        function hideStatus() {
+            document.getElementById('status').style.display = 'none';
+        }
+        
+        function clearLayers() {
+            currentLayers.forEach(layer => map.removeLayer(layer));
+            currentLayers = [];
+            if (legend) {
+                map.removeControl(legend);
+                legend = null;
+            }
+        }
+        
+        function createLegend(type, colors) {
+            const legendControl = L.control({position: 'bottomright'});
+            
+            legendControl.onAdd = function(map) {
+                const div = L.DomUtil.create('div', 'legend');
+                
+                let title = '';
+                switch(type) {
+                    case 'categorical': title = 'Categorical Risk'; break;
+                    case 'tornado': title = 'Tornado Risk (%)'; break;
+                    case 'wind': title = 'Wind Risk (%)'; break;
+                    case 'hail': title = 'Hail Risk (%)'; break;
+                }
+                
+                div.innerHTML = `<h4>${title}</h4>`;
+                
+                Object.entries(colors).forEach(([key, color]) => {
+                    div.innerHTML += `
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${color}"></div>
+                            <span>${key}</span>
+                        </div>
+                    `;
+                });
+                
+                return div;
+            };
+            
+            return legendControl;
+        }
+        
+        async function loadOutlook() {
+            const dateInput = document.getElementById('dateInput').value;
+            const outlookType = document.getElementById('outlookType').value;
+            
+            if (!dateInput) {
+                showStatus('Please select a date', 'error');
+                return;
+            }
+            
+            const date = new Date(dateInput);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const dateStr = `${year}${month}${day}`;
+            
+            showStatus('Loading SPC outlook data...', 'loading');
+            clearLayers();
+            
+            try {
+                // Construct SPC URL - using their KMZ/KML format
+                let spcUrl;
+                if (outlookType === 'categorical') {
+                    spcUrl = `https://www.spc.noaa.gov/products/outlook/archive/${year}/day1otlk_${dateStr}_1200_cat.kml`;
+                } else {
+                    spcUrl = `https://www.spc.noaa.gov/products/outlook/archive/${year}/day1otlk_${dateStr}_1200_${outlookType}.kml`;
+                }
+                
+                // Note: Due to CORS restrictions, we'll simulate loading data
+                // In a real implementation, you'd need a proxy server or use SPC's API
+                simulateOutlookData(outlookType);
+                
+            } catch (error) {
+                console.error('Error loading outlook:', error);
+                showStatus('Error loading outlook data. Using sample data instead.', 'error');
+                simulateOutlookData(outlookType);
+            }
+        }
+        
+        function simulateOutlookData(type) {
+            // Sample polygon data for demonstration
+            const samplePolygons = {
+                categorical: [
+                    {
+                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
+                        risk: 'SLGT',
+                        properties: { description: 'Slight Risk - Isolated severe thunderstorms possible' }
+                    },
+                    {
+                        coords: [[[32, -98], [32, -93], [35, -93], [35, -98]]],
+                        risk: 'ENH',
+                        properties: { description: 'Enhanced Risk - Numerous severe thunderstorms likely' }
+                    }
+                ],
+                tornado: [
+                    {
+                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
+                        risk: '5',
+                        properties: { description: '5% tornado probability' }
+                    },
+                    {
+                        coords: [[[32, -98], [32, -93], [35, -93], [35, -98]]],
+                        risk: '10',
+                        properties: { description: '10% tornado probability' }
+                    }
+                ],
+                wind: [
+                    {
+                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
+                        risk: '15',
+                        properties: { description: '15% damaging wind probability' }
+                    }
+                ],
+                hail: [
+                    {
+                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
+                        risk: '15',
+                        properties: { description: '15% large hail probability' }
+                    }
+                ]
+            };
+            
+            const polygons = samplePolygons[type] || samplePolygons.categorical;
+            const colors = colorSchemes[type];
+            
+            polygons.forEach(polygon => {
+                const coords = polygon.coords[0].map(coord => [coord[0], coord[1]]);
+                const color = colors[polygon.risk] || '#666666';
+                
+                const layer = L.polygon(coords, {
+                    color: color,
+                    fillColor: color,
+                    fillOpacity: 0.3,
+                    weight: 2
+                }).bindPopup(`
+                    <strong>${type.toUpperCase()} Risk: ${polygon.risk}</strong><br>
+                    ${polygon.properties.description}
+                `);
+                
+                layer.addTo(map);
+                currentLayers.push(layer);
+            });
+            
+            // Add legend
+            legend = createLegend(type, colors);
+            legend.addTo(map);
+            
+            showStatus(`Loaded ${type} outlook data (sample)`, 'success');
+            setTimeout(hideStatus, 3000);
+        }
+        
+        // Event listeners
+        document.getElementById('loadOutlook').addEventListener('click', loadOutlook);
+        
+        // Load initial data
+        loadOutlook();
+    </script>
+</body>
+</html>
