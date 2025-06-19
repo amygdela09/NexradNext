@@ -281,95 +281,19 @@
             clearLayers();
             
             try {
-                // Construct SPC URL - using their KMZ/KML format
-                let spcUrl;
-                if (outlookType === 'categorical') {
-                    spcUrl = `https://www.spc.noaa.gov/products/outlook/archive/${year}/day1otlk_${dateStr}_1200_cat.kml`;
+                const response = await fetch(`http://localhost:5000/api/spc/outlook?date=${dateInput}&type=${outlookType}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayOutlookData(result.data, outlookType);
+                    showStatus(`Loaded ${outlookType} outlook for ${dateInput}`, 'success');
                 } else {
-                    spcUrl = `https://www.spc.noaa.gov/products/outlook/archive/${year}/day1otlk_${dateStr}_1200_${outlookType}.kml`;
+                    throw new Error(result.error);
                 }
-                
-                // Note: Due to CORS restrictions, we'll simulate loading data
-                // In a real implementation, you'd need a proxy server or use SPC's API
-                simulateOutlookData(outlookType);
-                
             } catch (error) {
                 console.error('Error loading outlook:', error);
-                showStatus('Error loading outlook data. Using sample data instead.', 'error');
-                simulateOutlookData(outlookType);
+                showStatus('Error loading outlook data', 'error');
             }
-        }
-        
-        function simulateOutlookData(type) {
-            // Sample polygon data for demonstration
-            const samplePolygons = {
-                categorical: [
-                    {
-                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
-                        risk: 'SLGT',
-                        properties: { description: 'Slight Risk - Isolated severe thunderstorms possible' }
-                    },
-                    {
-                        coords: [[[32, -98], [32, -93], [35, -93], [35, -98]]],
-                        risk: 'ENH',
-                        properties: { description: 'Enhanced Risk - Numerous severe thunderstorms likely' }
-                    }
-                ],
-                tornado: [
-                    {
-                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
-                        risk: '5',
-                        properties: { description: '5% tornado probability' }
-                    },
-                    {
-                        coords: [[[32, -98], [32, -93], [35, -93], [35, -98]]],
-                        risk: '10',
-                        properties: { description: '10% tornado probability' }
-                    }
-                ],
-                wind: [
-                    {
-                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
-                        risk: '15',
-                        properties: { description: '15% damaging wind probability' }
-                    }
-                ],
-                hail: [
-                    {
-                        coords: [[[35, -100], [35, -95], [40, -95], [40, -100]]],
-                        risk: '15',
-                        properties: { description: '15% large hail probability' }
-                    }
-                ]
-            };
-            
-            const polygons = samplePolygons[type] || samplePolygons.categorical;
-            const colors = colorSchemes[type];
-            
-            polygons.forEach(polygon => {
-                const coords = polygon.coords[0].map(coord => [coord[0], coord[1]]);
-                const color = colors[polygon.risk] || '#666666';
-                
-                const layer = L.polygon(coords, {
-                    color: color,
-                    fillColor: color,
-                    fillOpacity: 0.3,
-                    weight: 2
-                }).bindPopup(`
-                    <strong>${type.toUpperCase()} Risk: ${polygon.risk}</strong><br>
-                    ${polygon.properties.description}
-                `);
-                
-                layer.addTo(map);
-                currentLayers.push(layer);
-            });
-            
-            // Add legend
-            legend = createLegend(type, colors);
-            legend.addTo(map);
-            
-            showStatus(`Loaded ${type} outlook data (sample)`, 'success');
-            setTimeout(hideStatus, 3000);
         }
         
         // Event listeners
