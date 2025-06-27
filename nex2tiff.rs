@@ -1,16 +1,15 @@
 use anyhow::{Result, Context};
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt, WriteBytesExt};
 use clap::Parser;
 use flate2::read::GzDecoder;
-use gdal::raster::{Buffer, RasterCreationOption};
-use gdal::{Dataset, Driver, GeoTransform};
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use tiff::encoder::{TiffEncoder, colortype};
+use tiff::tags::Tag;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -62,6 +61,16 @@ struct SweepData {
     radials: Vec<RadialData>,
     sweep_number: u16,
     elevation_angle: f32,
+}
+
+#[derive(Debug)]
+struct GeoTransform {
+    pixel_size_x: f64,
+    rotation_x: f64,
+    top_left_x: f64,
+    pixel_size_y: f64,
+    rotation_y: f64,
+    top_left_y: f64,
 }
 
 struct NexradReader<R: Read + Seek> {
@@ -215,6 +224,10 @@ fn get_radar_site(site_id: &str) -> RadarSite {
         ("KTLX", (35.3331, -97.2778, 370.0)),
         ("KOUN", (35.2366, -97.4608, 384.0)),
         ("KDDC", (37.7608, -99.9689, 789.0)),
+        ("KFDR", (34.3623, -98.9763, 386.0)),
+        ("KINX", (36.1750, -95.5644, 204.0)),
+        ("KICT", (37.6544, -97.4428, 407.0)),
+        ("KVNX", (36.7406, -98.1278, 369.0)),
         // Add more sites as needed
     ]);
     
@@ -279,14 +292,14 @@ fn grid_radar_data(
     let top_left_lon = radar_site.longitude - (max_range / 111.32);
     let top_left_lat = radar_site.latitude + (max_range / 111.32);
     
-    let geotransform = GeoTransform([
-        top_left_lon,
-        pixel_size,
-        0.0,
-        top_left_lat,
-        0.0,
-        -pixel_size,
-    ]);
+    let geotransform = GeoTransform {
+        pixel_size_x: pixel_size,
+        rotation_x: 0.0,
+        top_left_x: top_left_lon,
+        pixel_size_y: -pixel_size,
+        rotation_y: 0.0,
+        top_left_y: top_left_lat,
+    };
     
     Ok((ref_grid, vel_grid, geotransform, (grid_size, grid_size)))
 }
@@ -297,41 +310,51 @@ fn write_geotiff(
     geotransform: &GeoTransform,
     size: (usize, usize),
 ) -> Result<()> {
-    let driver = Driver::get("GTiff")?;
-    let mut options = Vec::new();
-    options.push(RasterCreationOption {
-        key: "COMPRESS",
-        value: "LZW",
-    });
+    let file = File::create(filename)?;
+    let mut tiff = TiffEncoder::new(BufWriter::new(file))?;
     
-    let mut dataset = driver.create_with_band_type_with_options::<f32>(
-        filename,
-        size.0 as isize,
-        size.1 as isize,
-        1,
-        &options,
-    )?;
+    // Create image with proper dimensions and sample format
+    let mut image = tiff.new_image::<colortype::Gray32Float>(size.0 as u32, size.1 as u32)?;
     
-    dataset.set_geo_transform(geotransform)?;
+    // Write all TIFF tags in one block to avoid borrowing issues
+    {
+        let encoder = image.encoder();
+        
+        // Write basic TIFF tags
+        encoder.write_tag(Tag::Compression, 1u16)?; // No compression
+        encoder.write_tag(Tag::PlanarConfiguration, 1u16)?; // Chunky
+        encoder.write_tag(Tag::SampleFormat, &[3u16][0..1])?; // IEEE floating point
+        
+        // GeoTIFF specific tags
+        encoder.write_tag(Tag::Unknown(33550), &[
+            geotransform.pixel_size_x,
+            geotransform.pixel_size_y.abs(),
+            0.0
+        ][..])?; // ModelPixelScaleTag
+        
+        encoder.write_tag(Tag::Unknown(33922), &[
+            0.0, 0.0, 0.0,
+            geotransform.top_left_x, geotransform.top_left_y, 0.0
+        ][..])?; // ModelTiepointTag
+        
+        // GeoKeyDirectoryTag - indicates WGS84 geographic coordinate system
+        encoder.write_tag(Tag::Unknown(34735), &[
+            1u16, 1, 0, 4,      // Header: version=1, revision=1, minor=0, numberOfKeys=4
+            1024, 0, 1, 1,      // GTModelTypeGeoKey = ModelTypeGeographic
+            1025, 0, 1, 1,      // GTRasterTypeGeoKey = RasterPixelIsArea  
+            2048, 0, 1, 4326,   // GeographicTypeGeoKey = GCS_WGS_84
+            2054, 0, 1, 9102    // GeogAngularUnitsGeoKey = Angular_Degree
+        ][..])?;
+    }
     
-    // Set spatial reference (WGS84)
-    let srs = gdal::spatial_ref::SpatialRef::from_epsg(4326)?;
-    dataset.set_spatial_ref(&srs)?;
-    
-    let mut band = dataset.rasterband(1)?;
-    band.set_no_data_value(Some(f32::NAN.into()))?;
-    
-    let buffer = Buffer::new(size, data.to_vec());
-    band.write((0, 0), size, &buffer)?;
+    // Write the image data and finish - these methods consume the image
+    image.write_data(data)?;
     
     Ok(())
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    
-    // Initialize GDAL
-    gdal::init();
     
     let pb = ProgressBar::new_spinner();
     pb.set_style(ProgressStyle::default_spinner()
@@ -354,7 +377,7 @@ fn main() -> Result<()> {
         reader.read_to_end(&mut data)?;
     };
     
-    let mut cursor = Cursor::new(data);
+    let cursor = Cursor::new(data);
     
     let mut nexrad = NexradReader::new(cursor);
     nexrad.read_volume_header()?;
@@ -411,3 +434,4 @@ fn main() -> Result<()> {
     println!("Grid size: {}x{} at {}m resolution", size.0, size.1, args.resolution);
     
     Ok(())
+}
