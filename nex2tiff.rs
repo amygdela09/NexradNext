@@ -316,36 +316,35 @@ fn write_geotiff(
     // Create image with proper dimensions and sample format
     let mut image = tiff.new_image::<colortype::Gray32Float>(size.0 as u32, size.1 as u32)?;
     
-    // Write all TIFF tags in one block to avoid borrowing issues
-    {
-        let encoder = image.encoder();
-        
-        // Write basic TIFF tags
-        encoder.write_tag(Tag::Compression, 1u16)?; // No compression
-        encoder.write_tag(Tag::PlanarConfiguration, 1u16)?; // Chunky
-        encoder.write_tag(Tag::SampleFormat, &[3u16][0..1])?; // IEEE floating point
-        
-        // GeoTIFF specific tags
-        encoder.write_tag(Tag::Unknown(33550), &[
-            geotransform.pixel_size_x,
-            geotransform.pixel_size_y.abs(),
-            0.0
-        ][..])?; // ModelPixelScaleTag
-        
-        encoder.write_tag(Tag::Unknown(33922), &[
-            0.0, 0.0, 0.0,
-            geotransform.top_left_x, geotransform.top_left_y, 0.0
-        ][..])?; // ModelTiepointTag
-        
-        // GeoKeyDirectoryTag - indicates WGS84 geographic coordinate system
-        encoder.write_tag(Tag::Unknown(34735), &[
-            1u16, 1, 0, 4,      // Header: version=1, revision=1, minor=0, numberOfKeys=4
-            1024, 0, 1, 1,      // GTModelTypeGeoKey = ModelTypeGeographic
-            1025, 0, 1, 1,      // GTRasterTypeGeoKey = RasterPixelIsArea  
-            2048, 0, 1, 4326,   // GeographicTypeGeoKey = GCS_WGS_84
-            2054, 0, 1, 9102    // GeogAngularUnitsGeoKey = Angular_Degree
-        ][..])?;
-    }
+    // Write tags one by one to avoid borrowing issues
+    let encoder = image.encoder();
+    
+    // Write basic TIFF tags
+    encoder.write_tag(Tag::Compression, 1u16)?; // No compression
+    encoder.write_tag(Tag::PlanarConfiguration, 1u16)?; // Chunky
+    encoder.write_tag(Tag::SampleFormat, 3u16)?; // IEEE floating point
+    
+    // ModelPixelScaleTag - write individual values
+    encoder.write_tag(Tag::Unknown(33550), vec![
+        geotransform.pixel_size_x,
+        geotransform.pixel_size_y.abs(),
+        0.0
+    ])?;
+    
+    // ModelTiepointTag
+    encoder.write_tag(Tag::Unknown(33922), vec![
+        0.0, 0.0, 0.0,
+        geotransform.top_left_x, geotransform.top_left_y, 0.0
+    ])?;
+    
+    // GeoKeyDirectoryTag
+    encoder.write_tag(Tag::Unknown(34735), vec![
+        1u16, 1, 0, 4,      // Header: version=1, revision=1, minor=0, numberOfKeys=4
+        1024, 0, 1, 1,      // GTModelTypeGeoKey = ModelTypeGeographic
+        1025, 0, 1, 1,      // GTRasterTypeGeoKey = RasterPixelIsArea  
+        2048, 0, 1, 4326,   // GeographicTypeGeoKey = GCS_WGS_84
+        2054, 0, 1, 9102    // GeogAngularUnitsGeoKey = Angular_Degree
+    ])?;
     
     // Write the image data and finish - these methods consume the image
     image.write_data(data)?;
