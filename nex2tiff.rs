@@ -1,25 +1,3 @@
-// Cargo.toml
-/*
-[package]
-name = "nexrad-converter"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "nexrad-converter"
-path = "src/main.rs"
-
-[dependencies]
-clap = { version = "4.0", features = ["derive"] }
-anyhow = "1.0"
-byteorder = "1.4"
-flate2 = "1.0"
-gdal = "0.16"
-rayon = "1.7"
-indicatif = "0.17"
-chrono = "0.4"
-*/
-
 use anyhow::{Result, Context};
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use clap::Parser;
@@ -366,17 +344,16 @@ fn main() -> Result<()> {
     let file = File::open(&args.input)
         .context("Failed to open input file")?;
     
-    let reader: Box<dyn Read + Seek> = if args.input.ends_with(".gz") {
-        Box::new(BufReader::new(GzDecoder::new(file)))
+    // Read all data into memory first (simpler approach)
+    let mut data = Vec::new();
+    if args.input.ends_with(".gz") {
+        let mut decoder = GzDecoder::new(file);
+        decoder.read_to_end(&mut data)?;
     } else {
-        Box::new(BufReader::new(file))
+        let mut reader = BufReader::new(file);
+        reader.read_to_end(&mut data)?;
     };
     
-    // Note: For simplicity, this assumes the decompressed data fits in memory
-    // In practice, you'd want to stream the data
-    let mut data = Vec::new();
-    let mut buf_reader = reader;
-    buf_reader.read_to_end(&mut data)?;
     let mut cursor = Cursor::new(data);
     
     let mut nexrad = NexradReader::new(cursor);
@@ -434,12 +411,3 @@ fn main() -> Result<()> {
     println!("Grid size: {}x{} at {}m resolution", size.0, size.1, args.resolution);
     
     Ok(())
-}
-
-// Build instructions:
-// 1. Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-// 2. Install GDAL development libraries: sudo apt-get install libgdal-dev
-// 3. Create new project: cargo new nexrad-converter
-// 4. Replace src/main.rs with this code and update Cargo.toml with dependencies
-// 5. Build: cargo build --release
-// 6. Run: ./target/release/nexrad-converter input.gz -o output_dir
