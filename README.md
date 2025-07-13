@@ -302,3 +302,6 @@ Advanced Interactivity:
     Cross-Section Views: Allow users to draw a line on the map and view a vertical cross-section of radar data along that line (this would be a significant undertaking).
 
     User Feedback/Reporting: A simple mechanism for users to report issues or provide feedback.
+
+License:
+    MIT License. Check the license file for details.
