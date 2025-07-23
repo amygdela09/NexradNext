@@ -1,0 +1,1215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXRAD & SPC Weather Viewer</title>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+
+        .sidebar {
+            width: 350px; /* Slightly wider sidebar */
+            background: rgba(0, 0, 0, 0.85); /* Slightly darker */
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            overflow-y: auto;
+            border-right: 1px solid rgba(255, 255, 255, 0.15);
+            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5); /* Add subtle shadow */
+        }
+
+        .map-container {
+            flex: 1;
+            position: relative;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            margin-bottom: 20px;
+            color: #64b5f6;
+            text-align: center;
+            letter-spacing: 1px;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.2);
+        }
+
+        .control-group h3 {
+            margin-bottom: 10px;
+            color: #81c784;
+            font-size: 1.1rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding-bottom: 5px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 0.95rem;
+            color: #e0e0e0;
+        }
+
+        input[type="date"], input[type="time"], select, input[type="range"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            font-size: 0.9rem;
+            -webkit-appearance: none; /* Remove default browser styling for inputs */
+            appearance: none;
+        }
+
+        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); } /* Make calendar icon white */
+        input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+
+        input:focus, select:focus {
+            outline: none;
+            border-color: #64b5f6;
+            box-shadow: 0 0 5px rgba(100, 181, 246, 0.7);
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: linear-gradient(45deg, #4caf50, #45a049);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            margin-top: 5px;
+        }
+
+        button:hover {
+            background: linear-gradient(45deg, #45a049, #4caf50);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .legend {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px;
+            border-radius: 5px;
+            color: #333;
+            font-size: 0.8rem;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+
+        .legend-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #2c3e50;
+        }
+
+        .legend-scale {
+            display: flex;
+            height: 20px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+        }
+
+        .legend-labels {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+        }
+        
+        .legend-item { /* For SPC legend */
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+            font-size: 0.8rem;
+        }
+        
+        .legend-color { /* For SPC legend */
+            width: 20px;
+            height: 15px;
+            margin-right: 8px;
+            border: 1px solid #333;
+            flex-shrink: 0;
+        }
+
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            border: 1px solid transparent;
+        }
+
+        .status.info {
+            background: rgba(33, 150, 243, 0.2);
+            border-color: #2196f3;
+            color: #2196f3;
+        }
+
+        .status.success {
+            background: rgba(76, 175, 80, 0.2);
+            border-color: #4caf50;
+            color: #4caf50;
+        }
+
+        .status.error {
+            background: rgba(244, 67, 54, 0.2);
+            border-color: #f44336;
+            color: #f44336;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #64b5f6;
+        }
+
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 3px solid #64b5f6;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .radar-info {
+            font-size: 0.85rem;
+            line-height: 1.5;
+        }
+
+        .radar-info div {
+            margin: 5px 0;
+        }
+
+        .animation-btn {
+            background: linear-gradient(45deg, #2196f3, #1976d2);
+        }
+
+        .animation-btn:hover {
+            background: linear-gradient(45deg, #1976d2, #2196f3);
+        }
+
+        .animation-btn:disabled {
+            background: #666;
+        }
+
+        #frameSlider {
+            width: 100%;
+            margin: 10px 0;
+            -webkit-appearance: none;
+            height: 8px;
+            background: #d3d3d3;
+            outline: none;
+            opacity: 0.7;
+            -webkit-transition: .2s;
+            transition: opacity .2s;
+        }
+
+        #frameSlider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #64b5f6;
+            cursor: pointer;
+        }
+
+        #frameSlider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #64b5f6;
+            cursor: pointer;
+        }
+
+        #currentTime {
+            text-align: center;
+            font-weight: bold;
+            color: #64b5f6;
+            margin-top: 5px;
+            font-size: 1rem;
+        }
+
+        .time-inputs {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        /* Animation indicator */
+        .playing {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+
+        /* Available times list */
+        .time-list {
+            max-height: 180px; /* Increased height */
+            overflow-y: auto;
+            background: rgba(255, 255, 255, 0.08); /* Slightly more visible */
+            border-radius: 4px;
+            padding: 5px;
+            margin-top: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .time-item {
+            padding: 8px 10px; /* Increased padding */
+            margin: 3px 0; /* Increased margin */
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 3px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .time-item:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        .time-item.selected {
+            background: rgba(100, 181, 246, 0.4); /* Stronger selection color */
+            border: 1px solid #64b5f6;
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+                height: auto; /* Allow sidebar to shrink/grow */
+                order: 2;
+                padding-bottom: 50px; /* Add some space at bottom for scrolling on mobile */
+            }
+            
+            .map-container {
+                height: 50vh; /* Fixed height for map on mobile */
+                order: 1;
+            }
+            
+            .time-inputs {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <h1>🌐 Weather Map Viewer</h1>
+            
+            <div class="control-group">
+                <h3>📡 NEXRAD Radar</h3>
+                <div class="form-group">
+                    <label for="station">Radar Station:</label>
+                    <select id="station">
+                        </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="nexradDate">Date:</label>
+                    <input type="date" id="nexradDate">
+                </div>
+                
+                <div class="form-group">
+                    <label for="product">Product:</label>
+                    <select id="product">
+                        <option value="reflectivity">Reflectivity (dBZ)</option>
+                        <option value="velocity">Velocity (m/s)</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="animationMode" onchange="toggleAnimationMode()"> 
+                        Download Time Series for Animation
+                    </label>
+                </div>
+                
+                <div id="timeRangeControls" style="display: none;">
+                    <div class="time-inputs">
+                        <div class="form-group">
+                            <label for="startTime">Start Time:</label>
+                            <input type="time" id="startTime" value="12:00">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="endTime">End Time:</label>
+                            <input type="time" id="endTime" value="18:00">
+                        </div>
+                    </div>
+                    <button id="findTimes" onclick="findAvailableTimes()">
+                        🔍 Find Available Times
+                    </button>
+                </div>
+                
+                <div id="availableTimesPanel" class="control-group" style="display: none; margin-top: 20px;">
+                    <h3>⏰ Available Times for Animation</h3>
+                    <div id="availableTimesList" class="time-list"></div>
+                    <button id="loadSelectedTimes" onclick="loadSelectedTimes()" disabled style="margin-top: 10px;">
+                        📥 Load Selected Times
+                    </button>
+                </div>
+
+                <button id="loadRadarData" onclick="loadRadarData()">
+                    📡 Load Radar Data
+                </button>
+            </div>
+            
+            <div class="control-group" id="animationControls" style="display: none;">
+                <h3>🎬 Radar Animation</h3>
+                <div class="form-group">
+                    <button id="playPause" class="animation-btn" onclick="toggleAnimation()">▶️ Play</button>
+                </div>
+                
+                <div class="form-group">
+                    <label for="frameSlider">Time Frame:</label>
+                    <input type="range" id="frameSlider" min="0" max="0" value="0" 
+                           oninput="setAnimationFrame(this.value)">
+                    <div id="currentTime">--:--</div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="animationSpeed">Animation Speed:</label>
+                    <input type="range" id="animationSpeed" min="0.5" max="5" step="0.5" value="1" 
+                           oninput="setAnimationSpeed(this.value)">
+                    <span id="speedValue">1x</span>
+                </div>
+                
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="loopAnimation" checked> 
+                        Loop Animation
+                    </label>
+                </div>
+            </div>
+            
+            <div class="control-group">
+                <h3>🌪️ SPC Severe Weather Outlook</h3>
+                <div class="form-group">
+                    <label for="outlookDateInput">Date:</label>
+                    <input type="date" id="outlookDateInput" />
+                </div>
+                
+                <div class="form-group">
+                    <label for="outlookType">Outlook Type:</label>
+                    <select id="outlookType">
+                        <option value="categorical">Categorical (General Severe)</option>
+                        <option value="tornado">Tornado</option>
+                        <option value="wind">Wind</option>
+                        <option value="hail">Hail</option>
+                    </select>
+                </div>
+                
+                <button id="loadOutlook" onclick="loadOutlookData()">Load Outlook</button>
+            </div>
+
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <div id="loadingText">Processing data...</div>
+            </div>
+            
+            <div id="status" class="status" style="display: none;"></div>
+            
+            <div class="control-group" id="radarInfo" style="display: none;">
+                <h3>📊 Radar Information</h3>
+                <div class="radar-info" id="radarDetails"></div>
+            </div>
+            
+            <div class="control-group">
+                <h3>🎨 Display Options</h3>
+                <div class="form-group">
+                    <label for="opacity">Radar Opacity:</label>
+                    <input type="range" id="opacity" min="0" max="1" step="0.1" value="0.7" 
+                           oninput="updateOpacity(this.value)">
+                    <span id="opacityValue">70%</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="map-container">
+            <div id="map"></div>
+            </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    
+    <script>
+        // Global variables
+        let map;
+        let radarLayer = null;
+        let radarMarker = null;
+        let rangeRings = null; // Not implemented in backend, but kept for future
+        let currentRadarData = null;
+        let animationFrames = [];
+        let currentFrame = 0;
+        let isPlaying = false;
+        let animationInterval = null;
+        let animationSpeed = 1;
+        let availableTimes = [];
+        let selectedTimes = [];
+        let spcOutlookLayer = null;
+        let nexradLegend = null;
+        let spcLegend = null;
+
+
+        // Color schemes for SPC different risk levels
+        const spcColorSchemes = {
+            categorical: {
+                'TSTM': '#66bb6a',     // Green - Thunderstorm
+                'MRGL': '#42a5f5',     // Blue - Marginal
+                'SLGT': '#ffee58',     // Yellow - Slight
+                'ENH': '#ff9800',      // Orange - Enhanced
+                'MDT': '#f44336',      // Red - Moderate
+                'HIGH': '#9c27b0'      // Purple - High
+            },
+            tornado: {
+                '2': '#66bb6a',        // Green - 2%
+                '5': '#ffee58',        // Yellow - 5%
+                '10': '#ff9800',       // Orange - 10%
+                '15': '#f44336',       // Red - 15%
+                '30': '#9c27b0',       // Purple - 30%
+                '45': '#8e24aa',       // Dark Purple - 45%
+                '60': '#7b1fa2'        // Darker Purple - 60%
+            },
+            wind: {
+                '5': '#66bb6a',        // Green - 5%
+                '15': '#ffee58',       // Yellow - 15%
+                '30': '#ff9800',       // Orange - 30%
+                '45': '#f44336',       // Red - 45%
+                '60': '#9c27b0'        // Purple - 60%
+            },
+            hail: {
+                '5': '#66bb6a',        // Green - 5%
+                '15': '#ffee58',       // Yellow - 15%
+                '30': '#ff9800',       // Orange - 30%
+                '45': '#f44336',       // Red - 45%
+                '60': '#9c27b0'        // Purple - 60%
+            }
+        };
+
+        // Initialize the map
+        function initMap() {
+            map = L.map('map', {
+                center: [35.0, -97.5],
+                zoom: 5,
+                zoomControl: true
+            });
+
+            const baseLayers = {
+                'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+                }),
+                'Street': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; OpenStreetMap contributors'
+                }),
+                'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                    attribution: 'Tiles &copy; Esri'
+                })
+            };
+
+            baseLayers['Dark'].addTo(map);
+            L.control.layers(baseLayers).addTo(map);
+            L.control.scale().addTo(map);
+
+            showStatus('Map initialized. Select options and load data.', 'info');
+            loadNexradStations();
+
+            // Set default date for NEXRAD to yesterday or two days ago for more reliable data
+            const nexradDateInput = document.getElementById('nexradDate');
+            const defaultNexradDate = new Date();
+            defaultNexradDate.setDate(defaultNexradDate.getDate() - 1); // Default to yesterday
+            nexradDateInput.valueAsDate = defaultNexradDate;
+
+            // Set default date for SPC to today
+            const outlookDateInput = document.getElementById('outlookDateInput');
+            outlookDateInput.valueAsDate = new Date();
+        }
+
+        // --- Status and Loading Functions ---
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+            status.style.display = 'block';
+        }
+
+        function hideStatus() {
+            document.getElementById('status').style.display = 'none';
+        }
+
+        function showLoading(show, message = 'Processing data...') {
+            const loadingDiv = document.getElementById('loading');
+            const loadingText = document.getElementById('loadingText');
+            loadingText.textContent = message;
+            loadingDiv.style.display = show ? 'block' : 'none';
+            document.querySelectorAll('button').forEach(btn => btn.disabled = show); // Disable buttons while loading
+        }
+
+        // --- Layer Management ---
+        function clearRadarLayers() {
+            if (radarLayer) {
+                map.removeLayer(radarLayer);
+                radarLayer = null;
+            }
+            if (radarMarker) {
+                map.removeLayer(radarMarker);
+                radarMarker = null;
+            }
+            if (nexradLegend) {
+                map.removeControl(nexradLegend);
+                nexradLegend = null;
+            }
+            document.getElementById('radarInfo').style.display = 'none';
+            stopAnimation(); // Stop animation if layers are cleared
+            document.getElementById('animationControls').style.display = 'none';
+            animationFrames = [];
+        }
+
+        function clearOutlookLayers() {
+            if (spcOutlookLayer) {
+                map.removeLayer(spcOutlookLayer);
+                spcOutlookLayer = null;
+            }
+            if (spcLegend) {
+                map.removeControl(spcLegend);
+                spcLegend = null;
+            }
+        }
+
+        function clearAllLayers() {
+            clearRadarLayers();
+            clearOutlookLayers();
+        }
+
+        // --- NEXRAD Specific Functions ---
+
+        async function loadNexradStations() {
+            try {
+                const response = await fetch('/api/nexrad/stations');
+                const stations = await response.json();
+                const selectElement = document.getElementById('station');
+                selectElement.innerHTML = ''; // Clear existing options
+                for (const code in stations) {
+                    const option = document.createElement('option');
+                    option.value = code;
+                    option.textContent = `${code} - ${stations[code]}`;
+                    selectElement.appendChild(option);
+                }
+            } catch (error) {
+                console.error('Error loading NEXRAD stations:', error);
+                showStatus('Error loading NEXRAD stations. See console for details.', 'error');
+            }
+        }
+
+        function toggleAnimationMode() {
+            const animationMode = document.getElementById('animationMode').checked;
+            const timeRangeControls = document.getElementById('timeRangeControls');
+            const availableTimesPanel = document.getElementById('availableTimesPanel');
+            const loadRadarDataBtn = document.getElementById('loadRadarData');
+
+            if (animationMode) {
+                timeRangeControls.style.display = 'block';
+                availableTimesPanel.style.display = 'block';
+                loadRadarDataBtn.textContent = '📥 Load Radar Animation';
+                showStatus('Animation mode enabled. Set time range or find available times.', 'info');
+            } else {
+                timeRangeControls.style.display = 'none';
+                availableTimesPanel.style.display = 'none';
+                loadRadarDataBtn.textContent = '📡 Load Radar Data';
+                stopAnimation();
+                document.getElementById('animationControls').style.display = 'none';
+                showStatus('Single frame mode enabled.', 'info');
+            }
+        }
+
+        async function findAvailableTimes() {
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('nexradDate').value;
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+
+            if (!station || !date) {
+                showStatus('Please select a station and date.', 'error');
+                return;
+            }
+
+            showLoading(true, 'Searching for available radar times...');
+            clearRadarLayers(); // Clear previous radar data
+
+            try {
+                // Fetching times for animation doesn't use a separate API, it's part of data endpoint.
+                // This function serves to simulate finding times or in a real scenario,
+                // you would hit a dedicated /api/nexrad/available_times endpoint.
+                // For this combined demo, we'll just indicate what would happen.
+                // The actual time series download happens with loadSelectedTimes or loadRadarData directly.
+                
+                // For now, let's just make a dummy list to show the UI
+                availableTimes = [];
+                const [startHour, startMinute] = startTime.split(':').map(Number);
+                const [endHour, endMinute] = endTime.split(':').map(Number);
+
+                let currentHour = startHour;
+                let currentMinute = startMinute;
+                let timeCount = 0;
+
+                while (currentHour <= endHour || (currentHour === endHour && currentMinute <= endMinute && currentHour === startHour)) {
+                    const timeStr = `${currentHour.toString().padStart(2, '0')}:${currentMinute.toString().padStart(2, '0')}`;
+                    availableTimes.push({
+                        time: timeStr,
+                        hour: currentHour,
+                        minute: currentMinute,
+                        timestamp: currentHour * 60 + currentMinute,
+                        selected: false,
+                        hasWeather: Math.random() > 0.3, // Simulate some having weather
+                        intensity: Math.random() // Simulate intensity
+                    });
+
+                    currentMinute += 5;
+                    if (currentMinute >= 60) {
+                        currentMinute = 0;
+                        currentHour++;
+                    }
+                    if (timeCount++ > 200) break; // Prevent infinite loop for bad ranges
+                }
+                
+                availableTimes.sort((a, b) => a.timestamp - b.timestamp);
+                displayAvailableTimes(availableTimes);
+                showLoading(false);
+                showStatus(`Found ${availableTimes.length} simulated radar scans for ${station} on ${date}. Select times to load.`, 'success');
+
+            } catch (error) {
+                console.error('Error finding available times:', error);
+                showLoading(false);
+                showStatus('Error finding available times. See console for details.', 'error');
+            }
+        }
+
+        function displayAvailableTimes(times) {
+            const list = document.getElementById('availableTimesList');
+            list.innerHTML = '';
+            selectedTimes = []; // Reset selected times
+            updateSelectedTimesCount();
+
+            times.forEach((timeInfo, index) => {
+                const div = document.createElement('div');
+                div.className = 'time-item';
+                div.onclick = () => toggleTimeSelection(index);
+                
+                const weatherIcon = timeInfo.hasWeather ? '⚡' : '☁️';
+                div.innerHTML = `
+                    <span>${timeInfo.time}</span>
+                    <span style="float: right;">${weatherIcon}</span>
+                `;
+                list.appendChild(div);
+            });
+        }
+
+        function toggleTimeSelection(index) {
+            availableTimes[index].selected = !availableTimes[index].selected;
+            const timeItems = document.querySelectorAll('#availableTimesList .time-item');
+            if (availableTimes[index].selected) {
+                timeItems[index].classList.add('selected');
+                selectedTimes.push(availableTimes[index]);
+            } else {
+                timeItems[index].classList.remove('selected');
+                selectedTimes = selectedTimes.filter(t => t.time !== availableTimes[index].time);
+            }
+            updateSelectedTimesCount();
+        }
+
+        function updateSelectedTimesCount() {
+            const loadBtn = document.getElementById('loadSelectedTimes');
+            const count = selectedTimes.length;
+            if (count > 0) {
+                loadBtn.textContent = `📥 Load ${count} Selected Times`;
+                loadBtn.disabled = false;
+            } else {
+                loadBtn.textContent = '📥 Load Selected Times';
+                loadBtn.disabled = true;
+            }
+        }
+
+        async function loadSelectedTimes() {
+            if (selectedTimes.length === 0) {
+                showStatus('Please select at least one time frame for animation.', 'error');
+                return;
+            }
+
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('nexradDate').value;
+            const product = document.getElementById('product').value;
+
+            showLoading(true, `Loading ${selectedTimes.length} radar frames...`);
+            clearRadarLayers();
+
+            // Prepare parameters for the backend call
+            const firstTime = selectedTimes[0];
+            const lastTime = selectedTimes[selectedTimes.length - 1];
+
+            try {
+                const response = await fetch(`/api/nexrad/data?station=${station}&date=${date}&product=${product}&mode=animation&startTime=${firstTime.hour}:${firstTime.minute}&endTime=${lastTime.hour}:${lastTime.minute}`);
+                const result = await response.json();
+
+                if (result.success && result.mode === 'animation') {
+                    setupAnimation(result.frames);
+                    showLoading(false);
+                    showStatus(`Radar animation ready: ${result.frames.length} frames loaded.`, 'success');
+                } else {
+                    throw new Error(result.error || 'Failed to load radar animation data.');
+                }
+            } catch (error) {
+                console.error('Error loading NEXRAD animation:', error);
+                showLoading(false);
+                showStatus(`Error loading NEXRAD animation: ${error.message}`, 'error');
+            }
+        }
+
+
+        async function loadRadarData() {
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('nexradDate').value;
+            const product = document.getElementById('product').value;
+            const animationMode = document.getElementById('animationMode').checked;
+
+            if (!station || !date) {
+                showStatus('Please select a station and date.', 'error');
+                return;
+            }
+
+            clearRadarLayers(); // Clear any existing radar layers
+            stopAnimation(); // Stop any ongoing animation
+
+            if (animationMode) {
+                // If animation mode is checked, use the time range from inputs
+                const startTime = document.getElementById('startTime').value;
+                const endTime = document.getElementById('endTime').value;
+
+                if (!startTime || !endTime) {
+                    showStatus('Please enter a start and end time for animation mode.', 'error');
+                    return;
+                }
+
+                showLoading(true, `Loading radar animation for ${station} from ${startTime} to ${endTime}...`);
+                try {
+                    const response = await fetch(`/api/nexrad/data?station=${station}&date=${date}&product=${product}&mode=animation&startTime=${startTime}&endTime=${endTime}`);
+                    const result = await response.json();
+
+                    if (result.success && result.mode === 'animation') {
+                        setupAnimation(result.frames);
+                        showLoading(false);
+                        showStatus(`Radar animation ready: ${result.frames.length} frames loaded.`, 'success');
+                    } else {
+                        throw new Error(result.error || 'Failed to load radar animation data.');
+                    }
+                } catch (error) {
+                    console.error('Error loading NEXRAD animation:', error);
+                    showLoading(false);
+                    showStatus(`Error loading NEXRAD animation: ${error.message}`, 'error');
+                }
+
+            } else {
+                // Single frame mode (load at noon by default if specific time isn't selected)
+                const specificTime = '12:00'; // Default to noon for a single frame
+                showLoading(true, 'Downloading and processing NEXRAD data...');
+                try {
+                    const response = await fetch(`/api/nexrad/data?station=${station}&date=${date}&product=${product}&mode=single&time=${specificTime}`);
+                    const result = await response.json();
+
+                    if (result.success && result.mode === 'single') {
+                        displayRadarData(result);
+                        updateRadarInfo(result);
+                        showLoading(false);
+                        showStatus(`Successfully loaded ${product} data for ${station} on ${date}.`, 'success');
+                    } else {
+                        throw new Error(result.error || 'Failed to load single radar frame.');
+                    }
+                } catch (error) {
+                    console.error('Error loading NEXRAD data:', error);
+                    showLoading(false);
+                    showStatus(`Error loading NEXRAD data: ${error.message}`, 'error');
+                }
+            }
+        }
+
+        function displayRadarData(data) {
+            clearRadarLayers(); // Clear previous layers before adding new one
+
+            if (!data.png_url || !data.bounds) {
+                showStatus('No radar image or bounds available to display.', 'error');
+                return;
+            }
+
+            radarLayer = L.imageOverlay(data.png_url, data.bounds, {
+                opacity: parseFloat(document.getElementById('opacity').value),
+                interactive: true
+            }).addTo(map);
+
+            // Add radar location marker
+            radarMarker = L.marker([data.radar_lat, data.radar_lon], {
+                icon: L.divIcon({
+                    className: 'radar-location-icon',
+                    html: '<div style="background-color: red; width: 10px; height: 10px; border-radius: 50%;"></div>',
+                    iconSize: [10, 10]
+                })
+            }).addTo(map).bindPopup(`<b>Radar Location:</b> ${data.radar_lat.toFixed(4)}, ${data.radar_lon.toFixed(4)}`);
+
+            map.fitBounds(data.bounds); // Adjust map view to fit the radar image
+            createNexradLegend(data.field_name, data.data_min, data.data_max);
+            updateRadarInfo(data); // Update info panel for single frame or current animation frame
+        }
+
+        function createNexradLegend(field, min_val, max_val) {
+            if (nexradLegend) {
+                map.removeControl(nexradLegend);
+            }
+
+            nexradLegend = L.control({position: 'bottomleft'});
+            nexradLegend.onAdd = function (map) {
+                const div = L.DomUtil.create('div', 'info legend');
+                div.innerHTML = `<h4>NEXRAD ${field === 'reflectivity' ? 'Reflectivity (dBZ)' : 'Velocity (m/s)'}</h4>`;
+
+                const colors = field === 'reflectivity' ? 
+                    ['#646464', '#04e9e7', '#019ff4', '#0300f4', '#02fd02', '#01c501', '#008e00', '#fdf802', '#e5bc00', '#fd9500', '#fd0000', '#d40000', '#bc0000', '#f800fd', '#9854c6'] :
+                    ['#730026', '#e6194b', '#911eb4', '#4363d8', '#42d4f4', '#469990', '#9a6324', '#800000', '#000075', '#dcbeff']; // Simplified velocity colors
+
+                const labels = [];
+                // Generate a simple gradient bar for radar
+                const gradientDiv = `<div class="legend-scale" style="background: linear-gradient(to right, ${colors.join(',')});"></div>`;
+                div.innerHTML += gradientDiv;
+                
+                // Add min/max labels, possibly with some intermediate points
+                let minLabel = min_val.toFixed(0);
+                let maxLabel = max_val.toFixed(0);
+                if (field === 'reflectivity') {
+                    minLabel = "-32"; // PyART default min
+                    maxLabel = "64"; // PyART default max
+                } else if (field === 'velocity') {
+                     minLabel = "-30"; // PyART default min
+                     maxLabel = "30"; // PyART default max
+                }
+
+                div.innerHTML += `
+                    <div class="legend-labels">
+                        <span>${minLabel}</span>
+                        <span>${maxLabel}</span>
+                    </div>
+                `;
+
+                return div;
+            };
+            nexradLegend.addTo(map);
+        }
+
+        function updateRadarInfo(data) {
+            const radarInfoDiv = document.getElementById('radarInfo');
+            const radarDetailsDiv = document.getElementById('radarDetails');
+            radarDetailsDiv.innerHTML = `
+                <div><strong>Station:</strong> ${document.getElementById('station').value}</div>
+                <div><strong>Product:</strong> ${data.field_name}</div>
+                <div><strong>Lat/Lon:</strong> ${data.radar_lat.toFixed(4)}, ${data.radar_lon.toFixed(4)}</div>
+                <div><strong>Range:</strong> ~${data.max_range_km.toFixed(0)} km</div>
+                <div><strong>Data Range:</strong> ${data.data_min.toFixed(2)} to ${data.data_max.toFixed(2)}</div>
+            `;
+            radarInfoDiv.style.display = 'block';
+        }
+
+        function updateOpacity(value) {
+            if (radarLayer) {
+                radarLayer.setOpacity(parseFloat(value));
+            }
+            document.getElementById('opacityValue').textContent = `${(value * 100).toFixed(0)}%`;
+        }
+
+        // --- NEXRAD Animation Functions ---
+        function setupAnimation(frames) {
+            animationFrames = frames;
+            currentFrame = 0;
+            
+            const frameSlider = document.getElementById('frameSlider');
+            frameSlider.max = frames.length > 0 ? frames.length - 1 : 0;
+            frameSlider.value = 0;
+            
+            if (frames.length > 0) {
+                displayRadarData(frames[0]);
+                updateTimeDisplay(frames[0].time);
+                document.getElementById('animationControls').style.display = 'block';
+                startAnimation(); // Auto-start animation after loading
+            } else {
+                showStatus('No frames loaded for animation.', 'error');
+                document.getElementById('animationControls').style.display = 'none';
+            }
+        }
+
+        function toggleAnimation() {
+            if (animationFrames.length === 0) {
+                showStatus('No animation data loaded.', 'error');
+                return;
+            }
+            
+            const playButton = document.getElementById('playPause');
+            if (isPlaying) {
+                stopAnimation();
+                playButton.textContent = '▶️ Play';
+                playButton.classList.remove('playing');
+            } else {
+                startAnimation();
+                playButton.textContent = '⏸️ Pause';
+                playButton.classList.add('playing');
+            }
+        }
+
+        function startAnimation() {
+            if (animationFrames.length === 0) return;
+            
+            isPlaying = true;
+            const frameRate = 1000 / animationSpeed;
+            
+            animationInterval = setInterval(() => {
+                currentFrame++;
+                
+                if (currentFrame >= animationFrames.length) {
+                    if (document.getElementById('loopAnimation').checked) {
+                        currentFrame = 0;
+                    } else {
+                        stopAnimation();
+                        document.getElementById('playPause').textContent = '▶️ Play';
+                        document.getElementById('playPause').classList.remove('playing');
+                        return;
+                    }
+                }
+                
+                if (animationFrames[currentFrame]) {
+                    displayRadarData(animationFrames[currentFrame]);
+                    updateAnimationControls();
+                }
+            }, frameRate);
+        }
+
+        function stopAnimation() {
+            isPlaying = false;
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+            }
+        }
+
+        function setAnimationFrame(frameIndex) {
+            if (animationFrames.length === 0) return;
+            
+            currentFrame = parseInt(frameIndex);
+            if (animationFrames[currentFrame]) {
+                displayRadarData(animationFrames[currentFrame]);
+                updateTimeDisplay(animationFrames[currentFrame].time);
+            }
+        }
+
+        function setAnimationSpeed(speed) {
+            animationSpeed = parseFloat(speed);
+            document.getElementById('speedValue').textContent = speed + 'x';
+            
+            if (isPlaying) {
+                stopAnimation();
+                startAnimation();
+            }
+        }
+
+        function updateAnimationControls() {
+            const frameSlider = document.getElementById('frameSlider');
+            frameSlider.value = currentFrame;
+            if (animationFrames[currentFrame]) {
+                updateTimeDisplay(animationFrames[currentFrame].time);
+            }
+        }
+
+        function updateTimeDisplay(timeStr) {
+            document.getElementById('currentTime').textContent = timeStr;
+        }
+
+        // --- SPC Specific Functions ---
+        async function loadOutlookData() {
+            const dateInput = document.getElementById('outlookDateInput').value;
+            const outlookType = document.getElementById('outlookType').value;
+            
+            if (!dateInput) {
+                showStatus('Please select a date for the SPC outlook.', 'error');
+                return;
+            }
+            
+            showStatus('Loading SPC outlook data...', 'loading');
+            clearOutlookLayers(); // Clear previous SPC layers
+            
+            try {
+                const response = await fetch(`/api/spc/outlook?date=${dateInput}&type=${outlookType}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    displayOutlookData(result.data, outlookType);
+                    showStatus(`Loaded ${outlookType} outlook for ${dateInput}.`, 'success');
+                } else {
+                    throw new Error(result.error);
+                }
+            } catch (error) {
+                console.error('Error loading SPC outlook:', error);
+                showStatus(`Error loading SPC outlook: ${error.message}`, 'error');
+            }
+        }
+
+        function displayOutlookData(geojson, outlookType) {
+            clearOutlookLayers();
+
+            const styleFeature = (feature) => {
+                const riskLevel = feature.properties.risk_level;
+                const color = spcColorSchemes[outlookType][riskLevel] || '#808080'; // Default to gray
+                return {
+                    fillColor: color,
+                    weight: 2,
+                    opacity: 1,
+                    color: 'white',
+                    dashArray: '3',
+                    fillOpacity: 0.7
+                };
+            };
+
+            spcOutlookLayer = L.geoJSON(geojson, {
+                style: styleFeature,
+                onEachFeature: (feature, layer) => {
+                    if (feature.properties && feature.properties.name) {
+                        layer.bindPopup(`<b>${feature.properties.name}</b><br>${feature.properties.description}`);
+                    }
+                }
+            }).addTo(map);
+
+            if (spcOutlookLayer.getBounds().isValid()) {
+                map.fitBounds(spcOutlookLayer.getBounds());
+            }
+
+            createSPCLegend(outlookType);
+        }
+
+        function createSPCLegend(type) {
+            if (spcLegend) {
+                map.removeControl(spcLegend);
+            }
+
+            spcLegend = L.control({position: 'bottomright'});
+            spcLegend.onAdd = function(map) {
+                const div = L.DomUtil.create('div', 'legend');
+                let title = '';
+                switch(type) {
+                    case 'categorical': title = 'Categorical Risk'; break;
+                    case 'tornado': title = 'Tornado Risk (%)'; break;
+                    case 'wind': title = 'Wind Risk (%)'; break;
+                    case 'hail': title = 'Hail Risk (%)'; break;
+                }
+                
+                div.innerHTML = `<h4>${title}</h4>`;
+                
+                const colors = spcColorSchemes[type];
+                if (colors) {
+                    // Sort the keys for consistent legend order if numeric
+                    const sortedKeys = Object.keys(colors).sort((a, b) => {
+                        // Numeric sort for percentages, alphabetical for categorical
+                        if (!isNaN(parseInt(a)) && !isNaN(parseInt(b))) {
+                            return parseInt(a) - parseInt(b);
+                        }
+                        return 0; // Keep original order for non-numeric (categorical)
+                    });
+
+                    for (const key of sortedKeys) {
+                        const color = colors[key];
+                        div.innerHTML += `
+                            <div class="legend-item">
+                                <div class="legend-color" style="background-color: ${color}"></div>
+                                <span>${key}</span>
+                            </div>
+                        `;
+                    }
+                }
+                return div;
+            };
+            spcLegend.addTo(map);
+        }
+
+
+        // --- Event Listeners and Initial Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            initMap();
+            document.getElementById('opacity').addEventListener('input', (e) => updateOpacity(e.target.value));
+            document.getElementById('opacityValue').textContent = `${(parseFloat(document.getElementById('opacity').value) * 100).toFixed(0)}%`;
+            document.getElementById('outlookDateInput').valueAsDate = new Date(); // Default SPC date
+        });
+
+        // Initial load of some data (e.g., SPC outlook for today)
+        document.addEventListener('DOMContentLoaded', () => {
+            initMap();
+            loadOutlookData(); // Load SPC outlook on initial page load
+            // The NEXRAD data will be loaded when the user clicks 'Load Radar Data'
+        });
+
+    </script>
+</body>
+</html>
