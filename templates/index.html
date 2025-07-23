@@ -1,1343 +1,1038 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Unified Weather Viewer: NEXRAD & SPC Outlooks</title>
-    
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
-    
-    <!-- Custom CSS -->
-    <style>
-        /* General Reset & Body Styles */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+import os
+import io
+import gzip
+import boto3
+import requests
+import numpy as np
+import pyart
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from enum import Enum
+from osgeo import gdal, osr
+import matplotlib.pyplot as plt
+from urllib.parse import urljoin
+import tempfile
+import logging
+import json
+import re
+import shutil # For cleaning up temporary directories
+
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# --- Configuration ---
+# Create a dedicated directory for NEXRAD GeoTIFF outputs
+NEXRAD_OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'nexrad_data_output')
+os.makedirs(NEXRAD_OUTPUT_DIR, exist_ok=True)
+logger.info(f"NEXRAD GeoTIFFs will be stored in: {NEXRAD_OUTPUT_DIR}")
+
+# --- Classes from provided files ---
+
+class DataSource(Enum):
+    """
+    Enumeration for the different NEXRAD data sources.
+    """
+    AWS = "s3://noaa-nexrad-level2/"
+    GOOGLE = "gs://gcp-public-data-nexrad-l2/"
+    NCEI = "https://www.ncei.noaa.gov/data/nexrad-level-ii/access/"
+
+class NexradDownloader:
+    """
+    A library for downloading and processing NEXRAD Level 2 data.
+    (From nexrad_toolkit.py, with minor adjustments)
+    """
+
+    def __init__(self):
+        self.session = requests.Session()
+        # Initialize boto3 client only once
+        if not hasattr(self, 's3_client'):
+            try:
+                self.s3_client = boto3.client('s3')
+            except Exception as e:
+                logger.error(f"Failed to initialize boto3 S3 client: {e}. AWS downloads may not work.")
+                self.s3_client = None
+
+    def get_available_sites(self):
+        """
+        Returns a comprehensive list of NEXRAD radar sites.
+        This list is based on the official list from the National Weather Service.
+        """
+        return {
+            'KABR': 'Aberdeen, SD', 'KABX': 'Albuquerque, NM', 'KAKQ': 'Norfolk/Wakefield, VA',
+            'KAMA': 'Amarillo, TX', 'KAMX': 'Miami, FL', 'KAPX': 'Gaylord, MI',
+            'KARX': 'La Crosse, WI', 'KATX': 'Seattle/Tacoma, WA', 'KBBX': 'Beale AFB, CA',
+            'KBGM': 'Binghamton, NY', 'KBHX': 'Eureka, CA', 'KBIS': 'Bismarck, ND',
+            'KBLX': 'Billings, MT', 'KBMX': 'Birmingham, AL', 'KBOX': 'Boston, MA',
+            'KBRO': 'Brownsville, TX', 'KBUF': 'Buffalo, NY', 'KBYX': 'Key West, FL',
+            'KCAE': 'Columbia, SC', 'KCBW': 'Caribou, ME', 'KCBX': 'Boise, ID',
+            'KCCX': 'State College, PA', 'KCLE': 'Cleveland, OH', 'KCLX': 'Charleston, SC',
+            'KCRP': 'Corpus Christi, TX', 'KCXX': 'Burlington, VT', 'KCYS': 'Cheyenne, WY',
+            'KDAX': 'Sacramento, CA', 'KDDC': 'Dodge City, KS', 'KDFX': 'Laughlin AFB, TX',
+            'KDGX': 'Jackson, MS', 'KDIX': 'Philadelphia, PA', 'KDLH': 'Duluth, MN',
+            'KDMX': 'Des Moines, IA', 'KDOX': 'Dover AFB, DE', 'KDTX': 'Detroit, MI',
+            'KDVN': 'Davenport, IA', 'KDYX': 'Dyess AFB, TX', 'KEAX': 'Kansas City, MO',
+            'KEMX': 'Tucson, AZ', 'KENX': 'Albany, NY', 'KEOX': 'Fort Rucker, AL',
+            'KEPZ': 'El Paso, TX', 'KESX': 'Las Vegas, NV', 'KEVX': 'Eglin AFB, FL',
+            'KEWX': 'San Antonio, TX', 'KEYX': 'Edwards AFB, CA', 'KFCX': 'Roanoke, VA',
+            'KFDR': 'Altus AFB, OK', 'KFFC': 'Atlanta, GA', 'KFSD': 'Sioux Falls, SD',
+            'KFSX': 'Flagstaff, AZ', 'KFTG': 'Denver, CO', 'KFWD': 'Dallas/Fort Worth, TX',
+            'KFWS': 'Dallas/Fort Worth, TX', 'KGGW': 'Glasgow, MT', 'KGJX': 'Grand Junction, CO',
+            'KGLD': 'Goodland, KS', 'KGRB': 'Green Bay, WI', 'KGRK': 'Fort Hood, TX',
+            'KGRR': 'Grand Rapids, MI', 'KGSP': 'Greenville/Spartanburg, SC', 'KGUA': 'Andersen AFB, Guam',
+            'KGX': 'Minot AFB, ND', 'KGYX': 'Portland, ME', 'KHDX': 'Holloman AFB, NM',
+            'KHGX': 'Houston, TX', 'KHNX': 'San Joaquin Valley, CA', 'KHPX': 'Fort Campbell, KY',
+            'KHTX': 'Huntsville, AL', 'KICT': 'Wichita, KS', 'KICX': 'Cedar City, UT',
+            'KILN': 'Cincinnati/Wilmington, OH', 'KILX': 'Lincoln, IL', 'KIND': 'Indianapolis, IN',
+            'KINX': 'Tulsa, OK', 'KIWA': 'Phoenix, AZ', 'KIWX': 'Fort Wayne, IN',
+            'KJAX': 'Jacksonville, FL', 'KJGX': 'Robins AFB, GA', 'KJKL': 'Jackson, KY',
+            'KLBB': 'Lubbock, TX', 'KLCH': 'Lake Charles, LA', 'KLIX': 'New Orleans, LA',
+            'KLNX': 'North Platte, NE', 'KLOT': 'Chicago, IL', 'KLRX': 'Elko, NV',
+            'KLSX': 'St. Louis, MO', 'KLTX': 'Wilmington, NC', 'KLVX': 'Las Vegas, NV',
+            'KLWX': 'Sterling, VA', 'KMAF': 'Midland/Odessa, TX', 'KMAX': 'Medford, OR',
+            'KMBX': 'Minot AFB, ND', 'KMHX': 'Morehead City, NC', 'KMKX': 'Milwaukee, WI',
+            'KMLB': 'Melbourne, FL', 'KMOB': 'Mobile, AL', 'KMPX': 'Minneapolis/St. Paul, MN',
+            'KMQT': 'Marquette, MI', 'KMRX': 'Knoxville, TN', 'KMSX': 'Missoula, MT',
+            'KMTX': 'Salt Lake City, UT', 'KMUX': 'San Francisco, CA', 'KMVX': 'Grand Forks, ND',
+            'KMWX': 'Minneapolis, MN', 'KNKX': 'San Diego, CA', 'KNQA': 'Memphis, TN',
+            'KOAX': 'Omaha, NE', 'KOHX': 'Nashville, TN', 'KOKX': 'New York City, NY',
+            'KOTX': 'Spokane, WA', 'KOUN': 'Norman, OK', 'KPAH': 'Paducah, KY',
+            'KPBZ': 'Pittsburgh, PA', 'KPDT': 'Pendleton, OR', 'KPOE': 'Fort Polk, LA',
+            'KPUX': 'Pueblo, CO', 'KRAX': 'Raleigh/Durham, NC', 'KRGX': 'Reno, NV',
+            'KRIW': 'Riverton, WY', 'KRLX': 'Charleston, WV', 'KRTX': 'Portland, OR',
+            'KSFX': 'Pocatello/Idaho Falls, ID', 'KSGF': 'Springfield, MO', 'KSHV': 'Shreveport, LA',
+            'KSJT': 'San Angelo, TX', 'KSOX': 'Santa Ana Mountains, CA', 'KSRX': 'Fort Smith, AR',
+            'KTBW': 'Tampa, FL', 'KTFX': 'Great Falls, MT', 'KTLH': 'Tallahassee, FL',
+            'KTLX': 'Oklahoma City, OK', 'KTWX': 'Topeka, KS', 'KTYX': 'Montague, NY',
+            'KUDX': 'Rapid City, SD', 'KUEX': 'Hastings, NE', 'KVNX': 'Vance AFB, OK',
+            'KVTX': 'Roanoke, VA', 'KVWX': 'Evansville, IN', 'KYUX': 'Yuma, AZ'
         }
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            color: white;
-            overflow: hidden; /* Prevent body scroll */
-            display: flex;
-            height: 100vh; /* Full viewport height */
-        }
+    def _get_aws_urls(self, station, start_time, end_time):
+        """Generates file URLs for the AWS source."""
+        urls = []
+        current_time = start_time.replace(minute=0, second=0, microsecond=0) # Start from hour for listing
+        while current_time <= end_time:
+            prefix = f"{current_time.strftime('%Y/%m/%d')}/{station}/"
+            if self.s3_client:
+                paginator = self.s3_client.get_paginator('list_objects_v2')
+                try:
+                    pages = paginator.paginate(Bucket='noaa-nexrad-level2', Prefix=prefix)
+                    for page in pages:
+                        for obj in page.get('Contents', []):
+                            key = obj['Key']
+                            if key.endswith('.gz') or not key.endswith('/'): # Exclude directories
+                                # Extract time from filename (e.g., KTLX20240315_000000_V06.gz)
+                                match = re.search(r'(\d{8})_(\d{6})_V06\.gz$', key) # Common pattern
+                                if not match: # Try alternative common pattern
+                                    match = re.search(r'(\d{8})_(\d{6})\.gz$', key)
+                                if match:
+                                    file_time_str = f"{match.group(1)}{match.group(2)}"
+                                    try:
+                                        file_time = datetime.strptime(file_time_str, "%Y%m%d%H%M%S")
+                                        if start_time <= file_time <= end_time:
+                                            urls.append(f"s3://noaa-nexrad-level2/{key}")
+                                    except ValueError:
+                                        logger.warning(f"Could not parse time from filename: {key}")
+                                        continue
+                except Exception as e:
+                    logger.error(f"Error listing AWS S3 objects for {prefix}: {e}")
+            current_time += timedelta(hours=1) # Iterate hourly
+        return list(set(urls)) # Remove duplicates
 
-        /* Container for sidebar and map */
-        .container {
-            display: flex;
-            width: 100%;
-            height: 100%;
-        }
+    def _get_google_urls(self, station, start_time, end_time):
+        """Generates file URLs for the Google Cloud source. (Simplified)"""
+        # Note: A full implementation would use the Google Cloud Storage client library
+        # to list files. This is a simplified example based on common patterns for public data.
+        urls = []
+        current_time = start_time.replace(minute=0, second=0, microsecond=0)
+        while current_time <= end_time:
+            # Google Cloud stores files in hourly tarballs or individual files
+            # For direct access, individual files are easier. Tarballs require extraction.
+            # This attempts common individual file patterns.
+            for minute_step in range(0, 60, 5): # Check every 5 minutes
+                check_time = current_time.replace(minute=minute_step)
+                if start_time <= check_time <= end_time:
+                    # Common file patterns on Google Cloud Storage
+                    filename_v06_gz = f"{station}{check_time.strftime('%Y%m%d_%H%M%S')}_V06.gz"
+                    filename_gz = f"{station}{check_time.strftime('%Y%m%d_%H%M%S')}.gz"
+                    filename_no_ext = f"{station}{check_time.strftime('%Y%m%d_%H%M%S')}"
 
-        /* Sidebar Styles */
-        .sidebar {
-            width: 350px; /* Wider sidebar for more controls */
-            background: rgba(0, 0, 0, 0.85); /* Slightly darker, more opaque */
-            backdrop-filter: blur(8px); /* Less blur for better readability */
-            padding: 25px;
-            overflow-y: auto; /* Scrollable sidebar */
-            border-right: 1px solid rgba(255, 255, 255, 0.15);
-            box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
-            display: flex;
-            flex-direction: column;
-            gap: 20px; /* Spacing between control groups */
-        }
+                    urls.append(f"gs://gcp-public-data-nexrad-l2/{check_time.year}/{check_time.month:02d}/{check_time.day:02d}/{station}/{filename_v06_gz}")
+                    urls.append(f"gs://gcp-public-data-nexrad-l2/{check_time.year}/{check_time.month:02d}/{check_time.day:02d}/{station}/{filename_gz}")
+                    urls.append(f"gs://gcp-public-data-nexrad-l2/{check_time.year}/{check_time.month:02d}/{check_time.day:02d}/{station}/{filename_no_ext}")
+            current_time += timedelta(hours=1)
+        return list(set(urls))
 
-        h1 {
-            font-size: 1.8rem;
-            margin-bottom: 20px;
-            color: #64b5f6;
-            text-align: center;
-            border-bottom: 1px solid rgba(100, 181, 246, 0.3);
-            padding-bottom: 10px;
-        }
+    def _get_ncei_urls(self, station, start_time, end_time):
+        """Generates file URLs for the NCEI source."""
+        urls = []
+        current_time = start_time.replace(minute=0, second=0, microsecond=0)
+        while current_time <= end_time:
+            # NCEI has a predictable URL structure, but filenames can vary.
+            # Check common scan times within each hour.
+            for minute_step in range(0, 60, 5):
+                check_time = current_time.replace(minute=minute_step)
+                if start_time <= check_time <= end_time:
+                    date_path = check_time.strftime('%Y%m')
+                    day_path = check_time.strftime('%Y%m%d')
+                    
+                    file_name_base = f"{station}{check_time.strftime('%Y%m%d_%H%M%S')}"
+                    possible_suffixes = ["", "_V06"]
+                    possible_compressions = ["", ".gz"]
 
-        .control-group {
-            padding: 18px;
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 10px; /* More rounded corners */
-            border: 1px solid rgba(255, 255, 255, 0.25);
-            box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.2);
-        }
+                    for suffix in possible_suffixes:
+                        for comp in possible_compressions:
+                            full_file_name = f"{file_name_base}{suffix}{comp}"
+                            url = f"{DataSource.NCEI.value}{date_path}/{day_path}/{full_file_name}"
+                            urls.append(url)
+            current_time += timedelta(hours=1)
+        return list(set(urls))
 
-        .control-group h3 {
-            margin-bottom: 12px;
-            color: #81c784;
-            font-size: 1.1rem;
-            border-bottom: 1px dashed rgba(129, 199, 132, 0.4);
-            padding-bottom: 8px;
-        }
+    def _download_file_from_url(self, url, output_path):
+        """Downloads a single file from a given URL."""
+        try:
+            # Check if a decompressed version already exists
+            if output_path.endswith('.gz'):
+                decompressed_output_path = output_path[:-3]
+                if os.path.exists(decompressed_output_path):
+                    logger.info(f"Decompressed file already exists: {decompressed_output_path}")
+                    return decompressed_output_path
+            elif os.path.exists(output_path):
+                 logger.info(f"File already exists: {output_path}")
+                 return output_path
 
-        .form-group {
-            margin-bottom: 18px; /* Increased spacing */
-        }
-
-        label {
-            display: block;
-            margin-bottom: 6px;
-            font-size: 0.95rem;
-            color: #e0e0e0;
-            font-weight: bold;
-        }
-
-        input[type="date"],
-        input[type="time"],
-        select,
-        input[type="range"] {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 6px; /* More rounded */
-            background: rgba(255, 255, 255, 0.08);
-            color: white;
-            font-size: 0.9rem;
-            transition: border-color 0.3s, box-shadow 0.3s;
-        }
-
-        input[type="date"]::-webkit-calendar-picker-indicator {
-            filter: invert(1); /* Make calendar icon white */
-        }
-
-        input[type="time"]::-webkit-calendar-picker-indicator {
-            filter: invert(1); /* Make clock icon white */
-        }
-
-        input:focus, select:focus {
-            outline: none;
-            border-color: #64b5f6;
-            box-shadow: 0 0 8px rgba(100, 181, 246, 0.6);
-        }
-
-        button {
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(45deg, #4caf50, #45a049);
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: bold;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
-        }
-
-        button:hover {
-            background: linear-gradient(45deg, #45a049, #4caf50);
-            transform: translateY(-3px);
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
-        }
-
-        button:disabled {
-            background: #666;
-            cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
-            opacity: 0.7;
-        }
-
-        /* Map Container */
-        .map-container {
-            flex: 1;
-            position: relative;
-            background-color: #333; /* Fallback background */
-        }
-
-        #map {
-            height: 100%;
-            width: 100%;
-            border-radius: 0 10px 10px 0; /* Rounded map corners on right */
-            overflow: hidden;
-        }
-
-        /* Loading Spinner */
-        .loading {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            color: #64b5f6;
-            font-size: 1.1rem;
-            font-weight: bold;
-            text-align: center;
-            gap: 10px;
-        }
-
-        .spinner {
-            border: 4px solid rgba(255, 255, 255, 0.3);
-            border-radius: 50%;
-            border-top: 4px solid #64b5f6;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
-        /* Status Messages */
-        .status {
-            padding: 12px;
-            margin: 15px 0;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            font-weight: bold;
-            display: none; /* Hidden by default */
-        }
-
-        .status.info {
-            background: rgba(33, 150, 243, 0.25);
-            border: 1px solid #2196f3;
-            color: #90caf9;
-        }
-
-        .status.success {
-            background: rgba(76, 175, 80, 0.25);
-            border: 1px solid #4caf50;
-            color: #a5d6a7;
-        }
-
-        .status.error {
-            background: rgba(244, 67, 54, 0.25);
-            border: 1px solid #f44336;
-            color: #ef9a9a;
-        }
-
-        /* Radar Info Display */
-        .radar-info {
-            font-size: 0.85rem;
-            line-height: 1.5;
-            color: #cfd8dc;
-        }
-
-        .radar-info div {
-            margin: 4px 0;
-        }
-
-        /* Animation Specific Styles */
-        .animation-btn {
-            background: linear-gradient(45deg, #2196f3, #1976d2);
-            margin-top: 10px;
-        }
-
-        .animation-btn:hover {
-            background: linear-gradient(45deg, #1976d2, #2196f3);
-        }
-
-        .playing {
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.7; }
-            100% { opacity: 1; }
-        }
-
-        #frameSlider {
-            margin-top: 10px;
-        }
-
-        #currentTime {
-            text-align: center;
-            font-weight: bold;
-            color: #64b5f6;
-            margin-top: 8px;
-            font-size: 1rem;
-        }
-
-        .time-inputs {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-        }
-
-        /* Available Times List */
-        .time-list {
-            max-height: 200px; /* Taller list */
-            overflow-y: auto;
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 6px;
-            padding: 8px;
-            margin-top: 12px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-        }
-
-        .time-item {
-            padding: 8px 10px;
-            margin: 4px 0;
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 4px;
-            font-size: 0.85rem;
-            cursor: pointer;
-            transition: background 0.2s, border 0.2s;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .time-item:hover {
-            background: rgba(255, 255, 255, 0.2);
-        }
-
-        .time-item.selected {
-            background: rgba(100, 181, 246, 0.35);
-            border: 1px solid #64b5f6;
-        }
-
-        /* Leaflet Legend Customization */
-        .leaflet-control.leaflet-control-custom-legend {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 12px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-            color: #333;
-            font-size: 0.85rem;
-            line-height: 1.4;
-            max-width: 220px;
-            margin: 10px;
-        }
-        .leaflet-control-custom-legend h4 {
-            margin: 0 0 10px 0;
-            color: #2c3e50;
-            font-size: 1rem;
-            border-bottom: 1px solid #ccc;
-            padding-bottom: 5px;
-        }
-        .leaflet-control-custom-legend .legend-item {
-            display: flex;
-            align-items: center;
-            margin-bottom: 5px;
-        }
-        .leaflet-control-custom-legend .legend-color {
-            width: 20px;
-            height: 15px;
-            margin-right: 8px;
-            border: 1px solid #555;
-            border-radius: 3px;
-        }
-        .leaflet-control-custom-legend .legend-scale-bar {
-            height: 20px;
-            width: 100%;
-            border: 1px solid #ccc;
-            margin-top: 5px;
-            background: linear-gradient(to right, 
-                #646464, #04e9e7, #019ff4, #0300f4, #02fd02,
-                #01c501, #008e00, #fdf802, #e5bc00, #fd9500,
-                #fd0000, #d40000, #bc0000, #f800fd, #9854c6
-            );
-        }
-        .leaflet-control-custom-legend .legend-labels {
-            display: flex;
-            justify-content: space-between;
-            font-size: 0.75rem;
-            margin-top: 2px;
-        }
-
-        /* Mobile Responsiveness */
-        @media (max-width: 900px) {
-            body {
-                flex-direction: column;
-                overflow-y: auto; /* Allow body scroll on small screens */
-            }
+            logger.info(f"Attempting to download {url} to {output_path}")
             
-            .sidebar {
-                width: 100%;
-                height: auto; /* Allow sidebar to take natural height */
-                max-height: 60vh; /* Limit sidebar height to prevent it from dominating */
-                order: 2; /* Move sidebar below map on mobile */
-                border-right: none;
-                border-top: 1px solid rgba(255, 255, 255, 0.15);
-                border-radius: 0;
-                box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
-            }
-            
-            .map-container {
-                height: 40vh; /* Map takes remaining height */
-                order: 1; /* Map above sidebar on mobile */
-                border-radius: 0;
-            }
+            if url.startswith('s3://'):
+                if not self.s3_client:
+                    raise RuntimeError("Boto3 S3 client not initialized. Cannot download from AWS.")
+                bucket_name = url.split('/')[2]
+                key = '/'.join(url.split('/')[3:])
+                self.s3_client.download_file(bucket_name, key, output_path)
+            elif url.startswith('gs://'):
+                # For Google Cloud Storage, direct HTTP access is often available for public data
+                http_url = url.replace('gs://', 'https://storage.googleapis.com/')
+                response = self.session.get(http_url, stream=True, timeout=30)
+                response.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            else: # Assume http/https for NCEI and other direct URLs
+                response = self.session.get(url, stream=True, timeout=30)
+                response.raise_for_status()
+                with open(output_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
 
-            .time-inputs {
-                grid-template-columns: 1fr; /* Stack time inputs */
-            }
-
-            .leaflet-control-custom-legend {
-                position: relative !important; /* Make legend flow with content */
-                bottom: auto !important;
-                right: auto !important;
-                margin: 15px auto !important; /* Center legend */
-                max-width: 90%;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="sidebar">
-            <h1>🌐 Unified Weather Viewer</h1>
+            # Decompress if necessary
+            if output_path.endswith('.gz'):
+                decompressed_path = output_path[:-3]
+                with gzip.open(output_path, 'rb') as f_in:
+                    with open(decompressed_path, 'wb') as f_out:
+                        f_out.write(f_in.read())
+                os.remove(output_path) # Remove the compressed file
+                logger.info(f"Decompressed {output_path} to {decompressed_path}")
+                return decompressed_path
+            return output_path
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"HTTP/S error downloading {url}: {e}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to download {url} due to an unexpected error: {e}")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
             
-            <div class="control-group">
-                <h3>🗓️ Date & Time</h3>
-                <div class="form-group">
-                    <label for="dateInput">Date:</label>
-                    <input type="date" id="dateInput" />
-                </div>
-            </div>
-
-            <div class="control-group">
-                <h3>📡 NEXRAD Radar</h3>
-                <div class="form-group">
-                    <label for="station">Radar Station:</label>
-                    <select id="station">
-                        <!-- Options will be dynamically loaded by JS -->
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label for="product">Product:</label>
-                    <select id="product">
-                        <option value="reflectivity">Reflectivity (dBZ)</option>
-                        <option value="velocity">Velocity (m/s)</option>
-                    </select>
-                </div>
-                
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="animationMode" onchange="toggleAnimationMode()"> 
-                        Download Time Series for Animation
-                    </label>
-                </div>
-                
-                <div id="timeRangeControls" style="display: none;">
-                    <div class="time-inputs">
-                        <div class="form-group">
-                            <label for="startTime">Start Time:</label>
-                            <input type="time" id="startTime" value="12:00">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="endTime">End Time:</label>
-                            <input type="time" id="endTime" value="18:00">
-                        </div>
-                    </div>
-                    <button id="findTimes" onclick="findAvailableTimes()" style="margin-top: 10px;">
-                        🔍 Find Available Times
-                    </button>
-                </div>
-                
-                <div id="availableTimesPanel" style="display: none;">
-                    <h3>⏰ Available Scans</h3>
-                    <div id="availableTimesList" class="time-list"></div>
-                    <button id="loadSelectedTimes" onclick="loadSelectedTimes()" style="margin-top: 10px;">
-                        📥 Load Selected Scans
-                    </button>
-                </div>
-            </div>
-
-            <div class="control-group">
-                <h3>🌪️ SPC Outlooks</h3>
-                <div class="form-group">
-                    <label for="outlookType">Outlook Type:</label>
-                    <select id="outlookType">
-                        <option value="categorical">Categorical (General Severe)</option>
-                        <option value="tornado">Tornado</option>
-                        <option value="wind">Wind</option>
-                        <option value="hail">Hail</option>
-                    </select>
-                </div>
-            </div>
-            
-            <button id="loadCombinedData" onclick="loadCombinedData()">
-                🚀 Load Combined Data
-            </button>
-            
-            <div class="loading" id="loading" style="display: none;">
-                <div class="spinner"></div>
-                <div id="loadingText">Loading data...</div>
-            </div>
-            
-            <div id="status" class="status"></div>
-            
-            <div class="control-group" id="animationControls" style="display: none;">
-                <h3>🎬 Animation Controls</h3>
-                <div class="form-group">
-                    <button id="playPause" class="animation-btn" onclick="toggleAnimation()">▶️ Play</button>
-                </div>
-                
-                <div class="form-group">
-                    <label for="frameSlider">Time Frame:</label>
-                    <input type="range" id="frameSlider" min="0" max="0" value="0" 
-                           oninput="setAnimationFrame(this.value)">
-                    <div id="currentTime">--:--</div>
-                </div>
-                
-                <div class="form-group">
-                    <label for="animationSpeed">Animation Speed:</label>
-                    <input type="range" id="animationSpeed" min="0.5" max="5" step="0.5" value="1" 
-                           oninput="setAnimationSpeed(this.value)">
-                    <span id="speedValue">1x</span>
-                </div>
-                
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="loopAnimation" checked> 
-                        Loop Animation
-                    </label>
-                </div>
-            </div>
-
-            <div class="control-group" id="radarInfo" style="display: none;">
-                <h3>📊 Current Radar Info</h3>
-                <div class="radar-info" id="radarDetails"></div>
-            </div>
-
-            <div class="control-group">
-                <h3>🎨 Display Options</h3>
-                <div class="form-group">
-                    <label for="opacity">Radar Opacity:</label>
-                    <input type="range" id="opacity" min="0" max="1" step="0.05" value="0.7" 
-                           oninput="updateOpacity(this.value)">
-                    <span id="opacityValue">70%</span>
-                </div>
-                
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="showStorm" checked onchange="toggleStormTracking()"> 
-                        Show Storm Tracking (Not Implemented)
-                    </label>
-                </div>
-                
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="showRange" onchange="toggleRangeRings()"> 
-                        Show Range Rings (Not Implemented)
-                    </label>
-                </div>
-            </div>
-        </div>
+    def download_time_series(self, source: DataSource, station: str, start_time: datetime, end_time: datetime, output_dir: str):
+        """
+        Downloads NEXRAD data for a time series from the specified source.
+        """
+        os.makedirs(output_dir, exist_ok=True)
         
-        <div class="map-container">
-            <div id="map"></div>
-        </div>
-    </div>
+        urls = []
+        if source == DataSource.AWS:
+            urls = self._get_aws_urls(station, start_time, end_time)
+        elif source == DataSource.GOOGLE:
+            urls = self._get_google_urls(station, start_time, end_time)
+        elif source == DataSource.NCEI:
+            urls = self._get_ncei_urls(station, start_time, end_time)
+        else:
+            raise ValueError("Invalid data source specified.")
 
-    <!-- Leaflet JavaScript -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-    
-    <script>
-        // --- Global Variables ---
-        let map;
-        let radarLayer = null;
-        let outlookLayer = null;
-        let currentRadarMetadata = null; // Store metadata for current radar frame
-        let currentOutlookGeoJSON = null; // Store current outlook GeoJSON
+        downloaded_files = []
+        unique_urls = sorted(list(set(urls))) # Sort to maintain some time order, remove duplicates
+        
+        max_workers = 5 # Limit parallel downloads to avoid overwhelming sources or local resources
 
-        let animationFrames = []; // Array of {url, metadata, time} for radar animation
-        let currentFrameIndex = 0;
-        let isPlaying = false;
-        let animationInterval = null;
-        let animationSpeed = 1; // Default 1x speed
-        let availableTimes = []; // For "Find Available Times" feature
-        let selectedTimes = []; // For selected times in "Find Available Times"
-
-        // SPC Outlook Color Schemes (from OutlookMapTest.html)
-        const spcOutlookColorSchemes = {
-            categorical: {
-                'TSTM': '#66bb6a',     // Green - Thunderstorm
-                'MRGL': '#42a5f5',     // Blue - Marginal
-                'SLGT': '#ffee58',     // Yellow - Slight
-                'ENH': '#ff9800',      // Orange - Enhanced
-                'MDT': '#f44336',      // Red - Moderate
-                'HIGH': '#9c27b0'      // Purple - High
-            },
-            tornado: {
-                '2': '#66bb6a',        // Green - 2%
-                '5': '#ffee58',        // Yellow - 5%
-                '10': '#ff9800',       // Orange - 10%
-                '15': '#f44336',       // Red - 15%
-                '30': '#9c27b0',       // Purple - 30%
-                '45': '#8e24aa',       // Dark Purple - 45%
-                '60': '#7b1fa2'        // Darker Purple - 60%
-            },
-            wind: {
-                '5': '#66bb6a',        // Green - 5%
-                '15': '#ffee58',       // Yellow - 15%
-                '30': '#ff9800',       // Orange - 30%
-                '45': '#f44336',       // Red - 45%
-                '60': '#9c27b0'        // Purple - 60%
-            },
-            hail: {
-                '5': '#66bb6a',        // Green - 5%
-                '15': '#ffee58',       // Yellow - 15%
-                '30': '#ff9800',       // Orange - 30%
-                '45': '#f44336',       // Red - 45%
-                '60': '#9c27b0'        // Purple - 60%
-            }
-        };
-
-        // Radar Reflectivity Color Scale (for legend)
-        const reflectivityColors = [
-            '#646464', '#04e9e7', '#019ff4', '#0300f4', '#02fd02',
-            '#01c501', '#008e00', '#fdf802', '#e5bc00', '#fd9500',
-            '#fd0000', '#d40000', '#bc0000', '#f800fd', '#9854c6'
-        ];
-        const reflectivityBounds = [
-            -30, -25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 
-            30, 35, 40, 45, 50, 55, 60, 65, 70, 75
-        ];
-
-        // --- Map Initialization ---
-        function initMap() {
-            map = L.map('map', {
-                center: [39.8283, -98.5795], // Center on continental US
-                zoom: 4,
-                zoomControl: true,
-                maxZoom: 10, // Prevent zooming too far in on radar
-                minZoom: 3   // Prevent zooming too far out
-            });
-
-            // Add base layers
-            const baseLayers = {
-                'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-                    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
-                }),
-                'Street': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                    attribution: '&copy; OpenStreetMap contributors'
-                }),
-                'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
-                })
-            };
-
-            baseLayers['Dark'].addTo(map); // Default base layer
-
-            L.control.layers(baseLayers, {}, { collapsed: true }).addTo(map); // Layer control
-
-            showStatus('Map initialized. Select parameters and click "Load Combined Data".', 'info');
-        }
-
-        // --- UI Control Functions ---
-
-        // Show/Hide loading spinner and text
-        function showLoading(show, message = 'Loading data...') {
-            const loadingDiv = document.getElementById('loading');
-            const loadingText = document.getElementById('loadingText');
-            if (show) {
-                loadingText.textContent = message;
-                loadingDiv.style.display = 'flex';
-                document.getElementById('loadCombinedData').disabled = true;
-                document.getElementById('playPause').disabled = true; // Disable animation buttons during load
-                document.getElementById('loadSelectedTimes').disabled = true;
-                document.getElementById('findTimes').disabled = true;
-            } else {
-                loadingDiv.style.display = 'none';
-                document.getElementById('loadCombinedData').disabled = false;
-                document.getElementById('playPause').disabled = false;
-                document.getElementById('loadSelectedTimes').disabled = false;
-                document.getElementById('findTimes').disabled = false;
-            }
-        }
-
-        // Display status messages
-        function showStatus(message, type) {
-            const statusDiv = document.getElementById('status');
-            statusDiv.textContent = message;
-            statusDiv.className = `status ${type}`;
-            statusDiv.style.display = 'block';
-        }
-
-        function hideStatus() {
-            document.getElementById('status').style.display = 'none';
-        }
-
-        // Clear all existing data layers and legends from the map
-        function clearAllLayers() {
-            if (radarLayer) {
-                map.removeLayer(radarLayer);
-                radarLayer = null;
-            }
-            if (outlookLayer) {
-                map.removeLayer(outlookLayer);
-                outlookLayer = null;
-            }
-            // Remove existing custom legends
-            map.eachLayer(function(layer) {
-                if (layer instanceof L.Control.CustomLegend) {
-                    map.removeControl(layer);
-                }
-            });
-            hideRadarInfo();
-            stopAnimation(); // Stop any running radar animation
-            document.getElementById('animationControls').style.display = 'none'; // Hide animation controls
-            animationFrames = []; // Clear animation frames
-            currentFrameIndex = 0;
-            document.getElementById('frameSlider').max = 0;
-            document.getElementById('frameSlider').value = 0;
-            document.getElementById('currentTime').textContent = '--:--';
-        }
-
-        // Toggle visibility of time range controls for animation
-        function toggleAnimationMode() {
-            const animationMode = document.getElementById('animationMode').checked;
-            document.getElementById('timeRangeControls').style.display = animationMode ? 'grid' : 'none';
-            document.getElementById('findTimes').style.display = animationMode ? 'block' : 'none';
-            document.getElementById('availableTimesPanel').style.display = 'none'; // Hide list when mode changes
-            selectedTimes = []; // Clear selected times
-            updateSelectedTimesCount(); // Reset button text
-            if (!animationMode) {
-                stopAnimation();
-                document.getElementById('animationControls').style.display = 'none';
-                showStatus('Single frame mode enabled. Click "Load Combined Data" to load a single radar image.', 'info');
-            } else {
-                showStatus('Animation mode enabled. Use "Find Available Times" or set a range.', 'info');
-            }
-        }
-
-        // Update radar opacity
-        function updateOpacity(value) {
-            if (radarLayer) {
-                radarLayer.setOpacity(parseFloat(value));
-            }
-            document.getElementById('opacityValue').textContent = `${Math.round(value * 100)}%`;
-        }
-
-        // Stub for storm tracking toggle (not implemented in backend)
-        function toggleStormTracking() {
-            showStatus('Storm tracking is not yet implemented.', 'info');
-        }
-
-        // Stub for range rings toggle (not implemented in backend)
-        function toggleRangeRings() {
-            showStatus('Range rings are not yet implemented.', 'info');
-        }
-
-        // Display radar info in sidebar
-        function showRadarInfo(metadata) {
-            const radarInfoDiv = document.getElementById('radarInfo');
-            const radarDetailsDiv = document.getElementById('radarDetails');
-            if (metadata) {
-                radarDetailsDiv.innerHTML = `
-                    <div><strong>Station:</strong> ${metadata.radar_site || 'N/A'} (${metadata.radar_lat?.toFixed(4)}, ${metadata.radar_lon?.toFixed(4)})</div>
-                    <div><strong>Product:</strong> ${metadata.field_name?.toUpperCase()}</div>
-                    <div><strong>Max Range:</strong> ${metadata.max_range_km?.toFixed(1)} km</div>
-                    <div><strong>Data Range:</strong> ${metadata.data_min?.toFixed(2)} to ${metadata.data_max?.toFixed(2)}</div>
-                `;
-                radarInfoDiv.style.display = 'block';
-            } else {
-                hideRadarInfo();
-            }
-        }
-
-        function hideRadarInfo() {
-            document.getElementById('radarInfo').style.display = 'none';
-            document.getElementById('radarDetails').innerHTML = '';
-        }
-
-        // --- NEXRAD Specific Functions ---
-
-        // Fetch available radar stations from backend
-        async function fetchRadarStations() {
-            try {
-                const response = await fetch('http://localhost:5000/api/nexrad/stations');
-                const result = await response.json();
-                if (result.success) {
-                    const stationSelect = document.getElementById('station');
-                    stationSelect.innerHTML = ''; // Clear existing options
-                    for (const code in result.stations) {
-                        const option = document.createElement('option');
-                        option.value = code;
-                        option.textContent = `${code} - ${result.stations[code]}`;
-                        stationSelect.appendChild(option);
-                    }
-                    // Set KTLX as default if available
-                    if (stationSelect.querySelector('option[value="KTLX"]')) {
-                        stationSelect.value = 'KTLX';
-                    }
-                } else {
-                    showStatus(`Error fetching stations: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                console.error('Error fetching radar stations:', error);
-                showStatus('Failed to fetch radar stations. Is the backend running?', 'error');
-            }
-        }
-
-        // Find available times for a given station and date (simulated or actual)
-        async function findAvailableTimes() {
-            const station = document.getElementById('station').value;
-            const date = document.getElementById('dateInput').value;
-            
-            if (!station || !date) {
-                showStatus('Please select a radar station and date first.', 'error');
-                return;
-            }
-
-            showLoading(true, 'Searching for available radar scans...');
-            document.getElementById('availableTimesPanel').style.display = 'none'; // Hide previous list
-
-            try {
-                const response = await fetch(`http://localhost:5000/api/nexrad/available_times?station=${station}&date=${date}`);
-                const result = await response.json();
-
-                if (result.success) {
-                    availableTimes = result.times; // This will be a list of {time, timestamp}
-                    displayAvailableTimes(availableTimes);
-                    showStatus(`Found ${availableTimes.length} potential radar scans for ${station} on ${date}. Select scans to load.`, 'success');
-                } else {
-                    showStatus(`Error finding available times: ${result.error}`, 'error');
-                }
-            } catch (error) {
-                console.error('Error finding available times:', error);
-                showStatus('Failed to find available times. Check backend connection.', 'error');
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // Display available times in the UI list
-        function displayAvailableTimes(times) {
-            const panel = document.getElementById('availableTimesPanel');
-            const list = document.getElementById('availableTimesList');
-            
-            list.innerHTML = '';
-            selectedTimes = []; // Reset selected times
-            updateSelectedTimesCount(); // Update button state
-
-            if (times.length === 0) {
-                list.innerHTML = '<div style="text-align: center; padding: 10px; color: #ccc;">No scans found for this date.</div>';
-                panel.style.display = 'block';
-                return;
-            }
-            
-            times.forEach((timeInfo, index) => {
-                const div = document.createElement('div');
-                div.className = 'time-item';
-                div.dataset.index = index; // Store index for selection
-                div.onclick = () => toggleTimeSelection(index);
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_url = {}
+            for url in unique_urls:
+                # Create a unique filename for the downloaded raw file
+                # Use a hash or a more robust naming convention if files might have same names from different sources/times
+                file_name = os.path.basename(url.split('?')[0]) # Remove query parameters if any
+                if file_name.endswith('.tar'): # Handle tar files from Google (will need extraction)
+                    # For simplicity, we'll try to download .tar and assume it contains .gz inside
+                    # A more complete solution would extract individual files from .tar
+                    file_name = file_name.replace('.tar', '') # Treat tar as a container for now
                 
-                div.innerHTML = `<span>${timeInfo.time}</span>`;
+                output_path_base = os.path.join(output_dir, file_name)
                 
-                list.appendChild(div);
-            });
+                # Check for existing decompressed or raw files before scheduling download
+                if not (os.path.exists(output_path_base) or os.path.exists(output_path_base + '.gz')):
+                    future_to_url[executor.submit(self._download_file_from_url, url, output_path_base + '.gz')] = url # Assume .gz for now
+
+            for future in as_completed(future_to_url):
+                url = future_to_url[future]
+                try:
+                    result = future.result()
+                    if result and os.path.exists(result): # Ensure the file actually exists
+                        downloaded_files.append(result)
+                except Exception as exc:
+                    logger.error(f'{url} generated an exception during download: {exc}')
+
+        logger.info(f"Finished downloading. Downloaded {len(downloaded_files)} raw files.")
+        return downloaded_files
+
+
+class NEXRADProcessor:
+    """
+    NEXRAD Level 2 Data Processor for GeoTIFF conversion.
+    (Adapted from NexradDataProcessor.py, focusing on conversion)
+    """
+
+    def nexrad_to_geotiff(self, nexrad_file, output_geotiff, product='reflectivity'):
+        """Convert NEXRAD Level 2 data to GeoTIFF"""
+        logger.info(f"Processing NEXRAD file: {nexrad_file} for product: {product}")
+        
+        try:
+            # Read NEXRAD data using PyART
+            radar = pyart.io.read(nexrad_file)
             
-            panel.style.display = 'block';
-        }
-
-        // Toggle time selection in the list
-        function toggleTimeSelection(index) {
-            const timeItem = document.querySelector(`.time-item[data-index="${index}"]`);
-            if (!timeItem) return;
-
-            const isSelected = timeItem.classList.toggle('selected');
-            const timeInfo = availableTimes[index];
-
-            if (isSelected) {
-                selectedTimes.push(timeInfo);
-            } else {
-                selectedTimes = selectedTimes.filter(t => t.timestamp !== timeInfo.timestamp);
-            }
-            updateSelectedTimesCount();
-        }
-
-        // Update the "Load Selected Times" button text
-        function updateSelectedTimesCount() {
-            const loadBtn = document.getElementById('loadSelectedTimes');
-            const count = selectedTimes.length;
-            if (count > 0) {
-                loadBtn.textContent = `📥 Load ${count} Selected Scans`;
-                loadBtn.disabled = false;
-            } else {
-                loadBtn.textContent = '📥 Load Selected Scans';
-                loadBtn.disabled = true;
-            }
-        }
-
-        // Load selected times for animation (triggered by button)
-        async function loadSelectedTimes() {
-            if (selectedTimes.length === 0) {
-                showStatus('Please select at least one time frame for animation.', 'error');
-                return;
-            }
+            # Get the specified product (default: reflectivity)
+            field_name = product
             
-            const station = document.getElementById('station').value;
-            const date = document.getElementById('dateInput').value;
-            const product = document.getElementById('product').value;
+            # Check available fields
+            available_fields = list(radar.fields.keys())
             
-            // Sort selected times to ensure chronological animation
-            selectedTimes.sort((a, b) => a.timestamp - b.timestamp);
-
-            const firstTime = new Date(selectedTimes[0].timestamp * 1000);
-            const lastTime = new Date(selectedTimes[selectedTimes.length - 1].timestamp * 1000);
-
-            const startTimeStr = `${String(firstTime.getHours()).padStart(2, '0')}:${String(firstTime.getMinutes()).padStart(2, '0')}`;
-            const endTimeStr = `${String(lastTime.getHours()).padStart(2, '0')}:${String(lastTime.getMinutes()).padStart(2, '0')}`;
-
-            showLoading(true, `Loading ${selectedTimes.length} radar animation frames...`);
-            clearAllLayers(); // Clear map before loading new data
-
-            try {
-                const response = await fetch(`http://localhost:5000/api/nexrad/animation_frames?station=${station}&date=${date}&product=${product}&start_time=${startTimeStr}&end_time=${endTimeStr}`);
-                const result = await response.json();
-                
-                if (result.success && result.animation_frames && result.animation_frames.length > 0) {
-                    animationFrames = result.animation_frames;
-                    setupRadarAnimation();
-                    showStatus(`Loaded ${animationFrames.length} radar animation frames.`, 'success');
-                } else {
-                    showStatus(`No animation frames found or error: ${result.error || 'Unknown error'}`, 'error');
-                }
-            } catch (error) {
-                console.error('Error loading animation frames:', error);
-                showStatus('Failed to load animation frames. Check backend connection and selected times.', 'error');
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // Setup radar animation controls and display first frame
-        function setupRadarAnimation() {
-            if (animationFrames.length === 0) {
-                document.getElementById('animationControls').style.display = 'none';
-                return;
-            }
-
-            document.getElementById('animationControls').style.display = 'block';
-            const frameSlider = document.getElementById('frameSlider');
-            frameSlider.max = animationFrames.length - 1;
-            frameSlider.value = 0;
-            currentFrameIndex = 0;
-
-            displayRadarFrame(animationFrames[currentFrameIndex]);
-            updateTimeDisplay(animationFrames[currentFrameIndex].time);
-            stopAnimation(); // Ensure animation is stopped initially
-            document.getElementById('playPause').textContent = '▶️ Play';
-            document.getElementById('playPause').classList.remove('playing');
-        }
-
-        // Display a specific radar frame
-        function displayRadarFrame(frameData) {
-            if (radarLayer) {
-                map.removeLayer(radarLayer);
-            }
-
-            if (frameData && frameData.url && frameData.metadata) {
-                const metadata = frameData.metadata;
-                // Bounds are [min_lon, min_lat, max_lon, max_lat]
-                // GeoTIFF metadata gives radar_lat/lon and max_range_km
-                // We need to calculate the approximate bounding box for the image overlay.
-                // This is a simplification; a true GeoTIFF overlay would use its internal georeferencing.
-                // For L.imageOverlay, we need explicit bounds.
-                // Assuming a square extent around the radar for simplicity, based on max_range_km
-                const range_deg_approx_lat = metadata.max_range_km / 110.57; // 1 degree lat ~ 110.57 km
-                const range_deg_approx_lon = metadata.max_range_km / (111.32 * Math.cos(metadata.radar_lat * Math.PI / 180)); // 1 degree lon ~ 111.32 km * cos(lat)
-
-                const bounds = [
-                    [metadata.radar_lat - range_deg_approx_lat, metadata.radar_lon - range_deg_approx_lon],
-                    [metadata.radar_lat + range_deg_approx_lat, metadata.radar_lon + range_deg_approx_lon]
-                ];
-
-                radarLayer = L.imageOverlay(frameData.url, bounds, {
-                    opacity: parseFloat(document.getElementById('opacity').value),
-                    interactive: true,
-                    attribution: 'NEXRAD Data'
-                }).addTo(map);
-
-                // Adjust map view to fit radar bounds if it's the first frame or single frame
-                if (animationFrames.length === 0 || currentFrameIndex === 0) {
-                    map.fitBounds(bounds, { maxZoom: 7, padding: [50, 50] });
-                }
-                
-                currentRadarMetadata = metadata;
-                showRadarInfo(metadata);
-                createRadarLegend(metadata.field_name);
-            } else {
-                hideRadarInfo();
-                removeRadarLegend();
-                showStatus('No radar data to display for this frame.', 'info');
-            }
-        }
-
-        // Toggle radar animation play/pause
-        function toggleAnimation() {
-            if (animationFrames.length === 0) {
-                showStatus('No radar animation data loaded.', 'error');
-                return;
-            }
+            if field_name not in available_fields:
+                if 'reflectivity' in available_fields:
+                    field_name = 'reflectivity'
+                    logger.warning(f"Field '{product}' not found. Using 'reflectivity' instead.")
+                elif 'velocity' in available_fields:
+                    field_name = 'velocity'
+                    logger.warning(f"Field '{product}' not found. Using 'velocity' instead.")
+                elif available_fields:
+                    field_name = available_fields[0]
+                    logger.warning(f"Field '{product}' not found. Using first available field: '{field_name}'.")
+                else:
+                    raise ValueError("No valid radar fields found in the file.")
             
-            const playButton = document.getElementById('playPause');
+            # Get radar location
+            radar_lat = radar.latitude['data'][0]
+            radar_lon = radar.longitude['data'][0]
             
-            if (isPlaying) {
-                stopAnimation();
-                playButton.textContent = '▶️ Play';
-                playButton.classList.remove('playing');
-            } else {
-                startAnimation();
-                playButton.textContent = '⏸️ Pause';
-                playButton.classList.add('playing');
-            }
-        }
-
-        // Start radar animation
-        function startAnimation() {
-            if (animationFrames.length === 0) return;
+            logger.info(f"Radar location: {radar_lat:.4f}, {radar_lon:.4f}")
             
-            isPlaying = true;
-            const frameRate = 1000 / animationSpeed; // milliseconds per frame
+            # Get sweep data (use first sweep/elevation angle)
+            sweep_idx = 0
+            if radar.nsweeps == 0:
+                raise ValueError("Radar object contains no sweeps.")
+            if sweep_idx >= radar.nsweeps:
+                logger.warning(f"Sweep index {sweep_idx} out of bounds. Using sweep 0.")
+                sweep_idx = 0
+
+            sweep_slice = radar.get_slice(sweep_idx)
             
-            animationInterval = setInterval(() => {
-                currentFrameIndex++;
-                
-                if (currentFrameIndex >= animationFrames.length) {
-                    if (document.getElementById('loopAnimation').checked) {
-                        currentFrameIndex = 0;
-                    } else {
-                        stopAnimation();
-                        document.getElementById('playPause').textContent = '▶️ Play';
-                        document.getElementById('playPause').classList.remove('playing');
-                        return;
-                    }
-                }
-                
-                displayRadarFrame(animationFrames[currentFrameIndex]);
-                updateAnimationControls();
-            }, frameRate);
-        }
-
-        // Stop radar animation
-        function stopAnimation() {
-            isPlaying = false;
-            if (animationInterval) {
-                clearInterval(animationInterval);
-                animationInterval = null;
-            }
-        }
-
-        // Set specific radar animation frame
-        function setAnimationFrame(frameIndex) {
-            if (animationFrames.length === 0) return;
+            # Get data
+            data = radar.fields[field_name]['data'][sweep_slice]
+            azimuth = radar.azimuth['data'][sweep_slice]
+            range_bins = radar.range['data']
             
-            currentFrameIndex = parseInt(frameIndex);
-            displayRadarFrame(animationFrames[currentFrameIndex]);
-            updateTimeDisplay(animationFrames[currentFrameIndex].time);
-        }
-
-        // Set radar animation speed
-        function setAnimationSpeed(speed) {
-            animationSpeed = parseFloat(speed);
-            document.getElementById('speedValue').textContent = speed + 'x';
+            # Convert polar to cartesian coordinates
+            az_rad = np.deg2rad(azimuth)
+            range_2d, az_2d = np.meshgrid(range_bins, az_rad)
             
-            // Restart animation with new speed if currently playing
-            if (isPlaying) {
-                stopAnimation();
-                startAnimation();
-            }
-        }
+            # Calculate x, y coordinates (in meters from radar)
+            x = range_2d * np.sin(az_2d)
+            y = range_2d * np.cos(az_2d)
+            
+            # Create regular grid for interpolation
+            max_range = np.max(range_bins)
+            if max_range == 0:
+                 logger.warning("Max range is zero, cannot create grid.")
+                 return None
+            grid_size = 500  # 500x500 grid for image output
+            xi = np.linspace(-max_range, max_range, grid_size)
+            yi = np.linspace(-max_range, max_range, grid_size)
+            xi_2d, yi_2d = np.meshgrid(xi, yi)
+            
+            # Interpolate data to regular grid
+            from scipy.interpolate import griddata
+            
+            # Flatten arrays for interpolation
+            points = np.column_stack((x.flatten(), y.flatten()))
+            values = data.flatten()
+            
+            # Remove masked/invalid data
+            valid_mask = ~np.ma.is_masked(values) & np.isfinite(values)
+            if not np.any(valid_mask):
+                logger.warning(f"No valid data points found for interpolation in {nexrad_file}. Returning None.")
+                return None
+            
+            points = points[valid_mask]
+            values = values[valid_mask]
+            
+            # Interpolate
+            grid_data = griddata(points, values, (xi_2d, yi_2d), method='linear', fill_value=np.nan)
+            
+            # Calculate pixel size in degrees (approximate)
+            pixel_size_m = (2 * max_range) / grid_size
+            # Rough conversion factors
+            meters_per_degree_at_equator_lon = 111320
+            meters_per_degree_lat = 110570
 
-        // Update radar animation controls (slider and time display)
-        function updateAnimationControls() {
-            const frameSlider = document.getElementById('frameSlider');
-            frameSlider.value = currentFrameIndex;
-            updateTimeDisplay(animationFrames[currentFrameIndex].time);
-        }
+            # Adjust for latitude for longitude pixel size
+            pixel_size_deg_lon = pixel_size_m / (meters_per_degree_at_equator_lon * np.cos(np.deg2rad(radar_lat)))
+            pixel_size_deg_lat = pixel_size_m / meters_per_degree_lat
+            
+            # Create GeoTIFF
+            driver = gdal.GetDriverByName('GTiff')
+            
+            # Create dataset
+            dataset = driver.Create(
+                output_geotiff,
+                grid_size,
+                grid_size,
+                1, # Number of bands
+                gdal.GDT_Float32, # Data type
+                options=['COMPRESS=LZW', 'TILED=YES'] # Compression and tiling for better performance
+            )
+            
+            # Set geotransform (defines pixel coordinates)
+            # [top-left x, pixel width, rotation x, top-left y, rotation y, pixel height (negative)]
+            # Top-left corner is calculated to center the radar at (0,0) in grid and then convert to lat/lon
+            top_left_lon = radar_lon - (grid_size / 2) * pixel_size_deg_lon
+            top_left_lat = radar_lat + (grid_size / 2) * pixel_size_deg_lat
+            
+            geotransform = [
+                top_left_lon,
+                pixel_size_deg_lon,
+                0,
+                top_left_lat,
+                0,
+                -pixel_size_deg_lat # Negative pixel height for GeoTIFFs (origin is top-left)
+            ]
+            
+            dataset.SetGeoTransform(geotransform)
+            
+            # Set projection to WGS84
+            srs = osr.SpatialReference()
+            srs.ImportFromEPSG(4326)  # WGS84
+            dataset.SetProjection(srs.ExportToWkt())
+            
+            # Write data
+            band = dataset.GetRasterBand(1)
+            # Ensure grid_data is not all NaNs, replace with a default if so to avoid GDAL error
+            if np.all(np.isnan(grid_data)):
+                logger.warning("Interpolated grid data is all NaNs for output. Setting to 0s.")
+                band.WriteArray(np.zeros_like(grid_data, dtype=np.float32))
+                band.SetNoDataValue(0) # Set NoDataValue explicitly if data is empty
+            else:
+                # Replace NaNs with a value outside the expected data range if you want them masked by client
+                # Or set as NoDataValue if client supports it well.
+                # For now, let's keep NaN and rely on client-side handling or set a specific NoData value
+                band.WriteArray(np.flipud(grid_data).astype(np.float32))  # Flip vertically for correct orientation
+                band.SetNoDataValue(np.nan) # Mark NaN values as no-data
 
-        // Update radar time display
-        function updateTimeDisplay(timeStr) {
-            document.getElementById('currentTime').textContent = timeStr || '--:--';
-        }
-
-        // Create radar legend
-        let radarLegend = null;
-        function createRadarLegend(productType) {
-            if (radarLegend) {
-                map.removeControl(radarLegend);
-            }
-
-            radarLegend = L.control({position: 'bottomleft'});
-
-            radarLegend.onAdd = function(map) {
-                const div = L.DomUtil.create('div', 'leaflet-control leaflet-control-custom-legend');
-                
-                let title = '';
-                let scaleContent = '';
-
-                if (productType === 'reflectivity') {
-                    title = 'Reflectivity (dBZ)';
-                    scaleContent = `
-                        <div class="legend-scale-bar" style="background: linear-gradient(to right, ${reflectivityColors.join(', ')})"></div>
-                        <div class="legend-labels">
-                            <span>-30</span>
-                            <span>0</span>
-                            <span>30</span>
-                            <span>60</span>
-                            <span>75+</span>
-                        </div>
-                    `;
-                } else if (productType === 'velocity') {
-                    title = 'Velocity (m/s)';
-                    // Example velocity scale (adjust colors/values as needed)
-                    scaleContent = `
-                        <div class="legend-scale-bar" style="background: linear-gradient(to right, blue, cyan, lightgray, yellow, red)"></div>
-                        <div class="legend-labels">
-                            <span>-30</span>
-                            <span>0</span>
-                            <span>+30</span>
-                        </div>
-                    `;
-                } else {
-                    title = 'Radar Data'; // Generic title
-                }
-
-                div.innerHTML = `
-                    <h4>${title}</h4>
-                    ${scaleContent}
-                `;
-                return div;
-            };
-            radarLegend.addTo(map);
-        }
-
-        function removeRadarLegend() {
-            if (radarLegend) {
-                map.removeControl(radarLegend);
-                radarLegend = null;
-            }
-        }
-
-        // --- SPC Outlook Specific Functions ---
-
-        // Style function for SPC GeoJSON polygons
-        function styleOutlook(feature) {
-            const outlookType = feature.properties.outlook_type;
-            const riskLevel = feature.properties.risk_level;
-            const colors = spcOutlookColorSchemes[outlookType] || {};
-            const color = colors[riskLevel] || '#808080'; // Default grey for unknown
-
+            # Set metadata
+            dataset.SetMetadataItem('DESCRIPTION', f'NEXRAD {field_name} data')
+            dataset.SetMetadataItem('RADAR_SITE', radar.metadata.get('instrument_name', 'Unknown'))
+            
+            # Flush data to disk and close dataset
+            dataset.FlushCache()
+            dataset = None
+            
+            logger.info(f"GeoTIFF created: {output_geotiff}")
+            
             return {
-                fillColor: color,
-                weight: 2,
-                opacity: 0.8,
-                color: 'white',
-                dashArray: '3',
-                fillOpacity: 0.6
-            };
-        }
-
-        // OnEachFeature function for SPC GeoJSON popups
-        function onEachOutlookFeature(feature, layer) {
-            if (feature.properties && feature.properties.name) {
-                layer.bindPopup(`
-                    <strong>${feature.properties.name}</strong><br>
-                    Risk: ${feature.properties.risk_level}<br>
-                    Type: ${feature.properties.outlook_type}<br>
-                    ${feature.properties.description || ''}
-                `);
+                'geotiff_path': output_geotiff,
+                'radar_lat': float(radar_lat),
+                'radar_lon': float(radar_lon),
+                'field_name': field_name,
+                'max_range_km': float(max_range / 1000),
+                'data_min': float(np.nanmin(grid_data)) if not np.all(np.isnan(grid_data)) else None,
+                'data_max': float(np.nanmax(grid_data)) if not np.all(np.isnan(grid_data)) else None
             }
-        }
+            
+        except Exception as e:
+            logger.error(f"Error processing NEXRAD data to GeoTIFF for {nexrad_file}: {e}")
+            # Ensure output_geotiff is removed if creation failed
+            if os.path.exists(output_geotiff):
+                os.remove(output_geotiff)
+            return None
 
-        // Create SPC Outlook Legend
-        let spcLegend = null;
-        function createSPCLegend(outlookType) {
-            if (spcLegend) {
-                map.removeControl(spcLegend);
+
+class SPCDataFetcher:
+    """Handles fetching and parsing SPC outlook data (From OutlookBackend.py)"""
+    
+    BASE_URL = "https://www.spc.noaa.gov/products/outlook"
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+    
+    def get_outlook_url(self, date_str, outlook_type, day=1):
+        """
+        Construct SPC outlook URL
+        
+        Args:
+            date_str: Date in YYYYMMDD format
+            outlook_type: 'categorical', 'tornado', 'wind', 'hail'
+            day: Outlook day (1-8)
+        """
+        year = date_str[:4]
+        
+        # Different URL patterns for different outlook types
+        if outlook_type == 'categorical':
+            return f"{self.BASE_URL}/archive/{year}/day{day}otlk_{date_str}_1200_cat.kml"
+        else:
+            return f"{self.BASE_URL}/archive/{year}/day{day}otlk_{date_str}_1200_{outlook_type}.kml"
+    
+    def fetch_kml_data(self, url):
+        """Fetch KML data from SPC"""
+        try:
+            logger.info(f"Fetching data from: {url}")
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching KML data from {url}: {e}")
+            return None
+    
+    def parse_kml_to_geojson(self, kml_content, outlook_type):
+        """
+        Parse KML content and convert to GeoJSON format
+        
+        Args:
+            kml_content: Raw KML content
+            outlook_type: Type of outlook for proper styling
+        """
+        try:
+            # Parse XML
+            root = ET.fromstring(kml_content)
+            
+            # Define namespaces
+            namespaces = {
+                'kml': 'http://www.opengis.net/kml/2.2',
+                'gx': 'http://www.google.com/kml/ext/2.2'
             }
-
-            spcLegend = L.control({position: 'bottomright'});
-
-            spcLegend.onAdd = function(map) {
-                const div = L.DomUtil.create('div', 'leaflet-control leaflet-control-custom-legend');
+            
+            features = []
+            
+            # Find all Placemark elements
+            placemarks = root.findall('.//kml:Placemark', namespaces)
+            
+            for placemark in placemarks:
+                feature = self.parse_placemark(placemark, namespaces, outlook_type)
+                if feature:
+                    features.append(feature)
+            
+            return {
+                "type": "FeatureCollection",
+                "features": features
+            }
+            
+        except ET.ParseError as e:
+            logger.error(f"Error parsing KML: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error parsing KML: {e}")
+            return None
+    
+    def parse_placemark(self, placemark, namespaces, outlook_type):
+        """Parse individual placemark to GeoJSON feature"""
+        try:
+            # Get name/description
+            name_elem = placemark.find('kml:name', namespaces)
+            desc_elem = placemark.find('kml:description', namespaces)
+            
+            name = name_elem.text if name_elem is not None else ""
+            description = desc_elem.text if desc_elem is not None else ""
+            
+            # Extract risk level from name or description
+            risk_level = self.extract_risk_level(name, description, outlook_type)
+            
+            # Find polygon coordinates
+            polygon_elem = placemark.find('.//kml:Polygon', namespaces)
+            if polygon_elem is not None:
+                coords = self.parse_polygon_coordinates(polygon_elem, namespaces)
+                if coords:
+                    return {
+                        "type": "Feature",
+                        "properties": {
+                            "name": name,
+                            "description": description,
+                            "risk_level": risk_level,
+                            "outlook_type": outlook_type
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": coords
+                        }
+                    }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error parsing placemark: {e}")
+            return None
+    
+    def parse_polygon_coordinates(self, polygon_elem, namespaces):
+        """Parse polygon coordinates from KML"""
+        try:
+            # Find outer boundary coordinates
+            outer_boundary = polygon_elem.find('.//kml:outerBoundaryIs/kml:LinearRing/kml:coordinates', namespaces)
+            
+            if outer_boundary is not None and outer_boundary.text:
+                coord_text = outer_boundary.text.strip()
+                coordinates = []
                 
-                let title = '';
-                switch(outlookType) {
-                    case 'categorical': title = 'Categorical Risk'; break;
-                    case 'tornado': title = 'Tornado Risk (%)'; break;
-                    case 'wind': title = 'Wind Risk (%)'; break;
-                    case 'hail': title = 'Hail Risk (%)'; break;
+                # Parse coordinate pairs (lon,lat,alt format in KML)
+                for coord_pair in coord_text.split():
+                    parts = coord_pair.split(',')
+                    if len(parts) >= 2:
+                        lon, lat = float(parts[0]), float(parts[1])
+                        coordinates.append([lon, lat])
+                
+                # Return as nested array for GeoJSON polygon format
+                return [coordinates] if coordinates else None
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error parsing coordinates: {e}")
+            return None
+    
+    def extract_risk_level(self, name, description, outlook_type):
+        """Extract risk level from name or description"""
+        text = f"{name} {description}".upper()
+        
+        if outlook_type == 'categorical':
+            risk_levels = ['HIGH', 'MDT', 'ENH', 'SLGT', 'MRGL', 'TSTM']
+            for level in risk_levels:
+                if level in text:
+                    return level
+        else:
+            # For probability-based outlooks, look for percentages
+            percent_match = re.search(r'(\d+)%', text)
+            if percent_match:
+                return percent_match.group(1)
+        
+        return "UNKNOWN"
+
+# --- Flask App Initialization ---
+app = Flask(__name__)
+CORS(app) # Enable CORS for all routes
+
+nexrad_downloader = NexradDownloader()
+nexrad_processor = NEXRADProcessor()
+spc_fetcher = SPCDataFetcher()
+
+# --- Flask Routes for SPC Outlooks (from OutlookBackend.py) ---
+
+@app.route('/api/spc/outlook')
+def get_outlook():
+    """
+    Get SPC outlook data for a specific date and type
+    
+    Query parameters:
+    - date: Date in YYYY-MM-DD format
+    - type: Outlook type (categorical, tornado, wind, hail)
+    - day: Outlook day (default: 1)
+    """
+    try:
+        # Get parameters
+        date_param = request.args.get('date')
+        outlook_type = request.args.get('type', 'categorical')
+        day = int(request.args.get('day', 1))
+        
+        # Validate parameters
+        if not date_param:
+            return jsonify({"error": "Date parameter is required"}), 400
+        
+        if outlook_type not in ['categorical', 'tornado', 'wind', 'hail']:
+            return jsonify({"error": "Invalid outlook type"}), 400
+        
+        # Convert date format
+        try:
+            date_obj = datetime.strptime(date_param, '%Y-%m-%d')
+            date_str = date_obj.strftime('%Y%m%d')
+        except ValueError:
+            return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
+        
+        # Check if date is too recent (data might not be available)
+        if date_obj > datetime.now():
+             return jsonify({"error": "Data not available for future dates"}), 400
+        
+        # Get SPC URL and fetch data
+        url = spc_fetcher.get_outlook_url(date_str, outlook_type, day)
+        kml_content = spc_fetcher.fetch_kml_data(url)
+        
+        if not kml_content:
+            return jsonify({"error": f"Could not fetch data from SPC for {date_param} type {outlook_type}"}), 404
+        
+        # Parse KML to GeoJSON
+        geojson = spc_fetcher.parse_kml_to_geojson(kml_content, outlook_type)
+        
+        if not geojson:
+            return jsonify({"error": "Could not parse KML data"}), 500
+        
+        return jsonify({
+            "success": True,
+            "data": geojson,
+            "source_url": url,
+            "date": date_param,
+            "outlook_type": outlook_type,
+            "day": day
+        })
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in SPC outlook endpoint: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/spc/available-dates')
+def get_available_spc_dates():
+    """Get available dates for SPC data (last 30 days)"""
+    try:
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
+        
+        dates = []
+        current_date = start_date
+        
+        while current_date <= end_date:
+            dates.append(current_date.strftime('%Y-%m-%d'))
+            current_date += timedelta(days=1)
+        
+        return jsonify({
+            "success": True,
+            "dates": dates
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting available SPC dates: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+# --- Flask Routes for NEXRAD Radar Data ---
+
+@app.route('/api/nexrad/stations')
+def get_nexrad_stations():
+    """Returns a list of available NEXRAD radar stations."""
+    try:
+        stations = nexrad_downloader.get_available_sites()
+        return jsonify({"success": True, "stations": stations})
+    except Exception as e:
+        logger.error(f"Error getting NEXRAD stations: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/nexrad/available_times')
+def get_nexrad_available_times():
+    """
+    Get available NEXRAD scan times for a given station and date.
+    This generates a list of common scan times rather than querying exact file existence
+    for performance reasons. For exact availability, `single_frame` endpoint should be used.
+    """
+    station = request.args.get('station')
+    date_str = request.args.get('date')
+
+    if not station or not date_str:
+        return jsonify({"error": "Station and date parameters are required."}), 400
+
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({"error": "Invalid date format. Use YYYY-MM-DD"}), 400
+
+    times = []
+    # Generate common 5-minute intervals throughout the day
+    for hour in range(24):
+        for minute in range(0, 60, 5): 
+            dt_time = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            times.append({
+                "time": dt_time.strftime('%H:%M'),
+                "timestamp": dt_time.timestamp()
+            })
+    
+    return jsonify({"success": True, "times": sorted(times, key=lambda x: x['timestamp'])})
+
+
+@app.route('/api/nexrad/single_frame')
+def get_nexrad_single_frame():
+    """
+    Downloads and processes a single NEXRAD file into a GeoTIFF.
+    Returns the URL to the generated GeoTIFF.
+    """
+    station = request.args.get('station')
+    date_str = request.args.get('date')
+    product = request.args.get('product', 'reflectivity')
+    hour_str = request.args.get('hour')
+    minute_str = request.args.get('minute')
+    source_param = request.args.get('source', 'AWS') # Default to AWS
+
+    if not all([station, date_str, hour_str, minute_str]):
+        return jsonify({"error": "Station, date, hour, and minute parameters are required."}), 400
+
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        hour = int(hour_str)
+        minute = int(minute_str)
+        scan_time = date_obj.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        source = DataSource[source_param.upper()]
+    except (ValueError, KeyError) as e:
+        return jsonify({"error": f"Invalid date/time/source format: {e}"}), 400
+
+    # Create a temporary directory for this specific download
+    # This ensures isolation and easier cleanup for single files
+    request_temp_dir = tempfile.mkdtemp(dir=NEXRAD_OUTPUT_DIR)
+
+    try:
+        downloaded_file_path = None
+        # Attempt to get direct URL for the specific time and download
+        # This part tries to build a highly specific URL based on common patterns
+        # and then uses the general download function, which includes `requests.head` checks.
+        
+        # Build potential file name patterns for download attempt
+        file_base_name = f"{station}{scan_time.strftime('%Y%m%d_%H%M%S')}"
+        potential_raw_filepath = os.path.join(request_temp_dir, file_base_name + '.ar2v.gz') # Common PyART readable format
+        
+        # Use download_time_series for the actual download, limiting the range to ensure only one file
+        downloaded_files = nexrad_downloader.download_time_series(
+            source, station, scan_time, scan_time, output_dir=request_temp_dir
+        )
+        
+        if downloaded_files:
+            # Sort by proximity to requested time if multiple files were found
+            closest_file = None
+            min_diff_seconds = float('inf')
+            for f_path in downloaded_files:
+                try:
+                    # Extract datetime from filename (e.g., KTLX20240520_120000_V06.gz -> 20240520_120000)
+                    fname_match = re.search(r'(\d{8})_(\d{6})', os.path.basename(f_path))
+                    if fname_match:
+                        file_dt_str = f"{fname_match.group(1)}{fname_match.group(2)}"
+                        file_dt_obj = datetime.strptime(file_dt_str, '%Y%m%d%H%M%S')
+                        diff = abs((file_dt_obj - scan_time).total_seconds())
+                        if diff < min_diff_seconds:
+                            min_diff_seconds = diff
+                            closest_file = f_path
+                except ValueError:
+                    logger.warning(f"Could not parse datetime from filename: {os.path.basename(f_path)}")
+            downloaded_file_path = closest_file
+        
+        if not downloaded_file_path or not os.path.exists(downloaded_file_path):
+            return jsonify({"error": f"Failed to download NEXRAD data for {station} on {date_str} at {hour:02d}:{minute:02d} from {source.name}. It might not be available or the specific timestamp is not found."}), 404
+
+        # Process the downloaded file to GeoTIFF
+        output_geotiff_name = f"{os.path.basename(downloaded_file_path).split('.')[0]}_{product}.tif"
+        output_geotiff_path = os.path.join(NEXRAD_OUTPUT_DIR, output_geotiff_name) # Save to main output dir
+        
+        metadata = nexrad_processor.nexrad_to_geotiff(downloaded_file_path, output_geotiff_path, product)
+        
+        if not metadata:
+            return jsonify({"error": "Failed to convert NEXRAD data to GeoTIFF."}), 500
+        
+        # Return URL to the GeoTIFF
+        return jsonify({
+            "success": True,
+            "image_url": f"/nexrad_static/{os.path.basename(output_geotiff_path)}",
+            "metadata": metadata
+        })
+
+    except Exception as e:
+        logger.error(f"Error in single frame NEXRAD processing: {e}")
+        return jsonify({"error": "Internal server error during NEXRAD processing."}), 500
+    finally:
+        # Clean up the temporary download directory
+        if os.path.exists(request_temp_dir):
+            shutil.rmtree(request_temp_dir)
+            logger.info(f"Cleaned up temporary directory: {request_temp_dir}")
+
+
+@app.route('/api/nexrad/animation_frames')
+def get_nexrad_animation_frames():
+    """
+    Downloads and processes multiple NEXRAD files for animation.
+    Returns a list of URLs to the generated GeoTIFFs.
+    """
+    station = request.args.get('station')
+    date_str = request.args.get('date')
+    product = request.args.get('product', 'reflectivity')
+    start_time_str = request.args.get('start_time')
+    end_time_str = request.args.get('end_time')
+    source_param = request.args.get('source', 'AWS') # Default to AWS
+
+    if not all([station, date_str, start_time_str, end_time_str]):
+        return jsonify({"error": "Station, date, start_time, and end_time parameters are required."}), 400
+
+    try:
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        start_hour, start_minute = map(int, start_time_str.split(':'))
+        end_hour, end_minute = map(int, end_time_str.split(':'))
+        
+        start_dt = date_obj.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+        end_dt = date_obj.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+        source = DataSource[source_param.upper()]
+    except (ValueError, KeyError) as e:
+        return jsonify({"error": f"Invalid date/time/source format: {e}"}), 400
+
+    # Create a unique temporary directory for this animation batch's raw downloads
+    animation_temp_dir = tempfile.mkdtemp(dir=NEXRAD_OUTPUT_DIR)
+
+    try:
+        # Download files for the specified time range
+        downloaded_raw_files = nexrad_downloader.download_time_series(source, station, start_dt, end_dt, output_dir=animation_temp_dir)
+        
+        if not downloaded_raw_files:
+            return jsonify({"error": f"No NEXRAD data found for {station} on {date_str} between {start_time_str} and {end_time_str} from {source.name}"}), 404
+
+        geotiff_urls = []
+        # Sort files by their timestamp to ensure animation order
+        downloaded_raw_files.sort(key=lambda f: datetime.strptime(re.search(r'(\d{8})_(\d{6})', os.path.basename(f)).group(1) + re.search(r'(\d{8})_(\d{6})', os.path.basename(f)).group(2), '%Y%m%d%H%M%S') if re.search(r'(\d{8})_(\d{6})', os.path.basename(f)) else datetime.min)
+
+        for i, raw_file_path in enumerate(downloaded_raw_files):
+            try:
+                # Extract original timestamp from filename for consistent naming
+                fname = os.path.basename(raw_file_path)
+                match = re.search(r'(\d{8})_(\d{6})', fname)
+                timestamp_part = f"frame_{i}" # Default if regex fails
+                if match:
+                    timestamp_part = f"{match.group(1)}_{match.group(2)}"
+                
+                output_geotiff_name = f"{station}_{timestamp_part}_{product}.tif"
+                output_geotiff_path = os.path.join(NEXRAD_OUTPUT_DIR, output_geotiff_name)
+                
+                metadata = nexrad_processor.nexrad_to_geotiff(raw_file_path, output_geotiff_path, product)
+                
+                if metadata:
+                    geotiff_urls.append({
+                        "url": f"/nexrad_static/{os.path.basename(output_geotiff_path)}",
+                        "metadata": metadata,
+                        "time": datetime.strptime(timestamp_part, '%Y%m%d_%H%M%S').strftime('%H:%M') if '_' in timestamp_part else None
+                    })
+            except Exception as proc_e:
+                logger.error(f"Error processing {raw_file_path}: {proc_e}")
+            
+        if not geotiff_urls:
+            return jsonify({"error": "No GeoTIFFs could be generated from the downloaded files."}), 500
+
+        return jsonify({
+            "success": True,
+            "animation_frames": geotiff_urls
+        })
+
+    except Exception as e:
+        logger.error(f"Error in NEXRAD animation processing: {e}")
+        return jsonify({"error": "Internal server error during NEXRAD animation processing."}), 500
+    finally:
+        # Clean up the temporary raw download directory
+        if os.path.exists(animation_temp_dir):
+            shutil.rmtree(animation_temp_dir)
+            logger.info(f"Cleaned up temporary directory: {animation_temp_dir}")
+
+
+# --- Serve Static NEXRAD GeoTIFFs ---
+@app.route('/nexrad_static/<path:filename>')
+def serve_nexrad_static(filename):
+    """Serve dynamically generated NEXRAD GeoTIFFs."""
+    return send_from_directory(NEXRAD_OUTPUT_DIR, filename)
+
+# --- Health Check and Root ---
+@app.route('/api/health')
+def health_check():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "timestamp": datetime.now().isoformat()})
+
+@app.route('/')
+def index():
+    """API documentation"""
+    return jsonify({
+        "name": "Weather Data API (SPC & NEXRAD)",
+        "version": "1.0.0",
+        "endpoints": {
+            "/api/spc/outlook": {
+                "method": "GET",
+                "description": "Get SPC outlook data",
+                "parameters": {
+                    "date": "Date in YYYY-MM-DD format (required)",
+                    "type": "Outlook type: categorical, tornado, wind, hail (default: categorical)",
+                    "day": "Outlook day 1-8 (default: 1)"
                 }
-                
-                const colors = spcOutlookColorSchemes[outlookType] || {};
-                let legendItemsHtml = '';
-                Object.entries(colors).forEach(([key, color]) => {
-                    legendItemsHtml += `
-                        <div class="legend-item">
-                            <div class="legend-color" style="background-color: ${color}"></div>
-                            <span>${key}</span>
-                        </div>
-                    `;
-                });
-                
-                div.innerHTML = `<h4>${title}</h4>${legendItemsHtml}`;
-                return div;
-            };
-            spcLegend.addTo(map);
-        }
-
-        function removeSPCLegend() {
-            if (spcLegend) {
-                map.removeControl(spcLegend);
-                spcLegend = null;
-            }
-        }
-
-        // --- Combined Data Loading ---
-
-        async function loadCombinedData() {
-            const dateInput = document.getElementById('dateInput').value;
-            const station = document.getElementById('station').value;
-            const product = document.getElementById('product').value;
-            const animationMode = document.getElementById('animationMode').checked;
-            const startTime = document.getElementById('startTime').value;
-            const endTime = document.getElementById('endTime').value;
-            const outlookType = document.getElementById('outlookType').value;
-
-            if (!dateInput || !station) {
-                showStatus('Please select a date and radar station.', 'error');
-                return;
-            }
-
-            clearAllLayers(); // Clear map before loading new data
-            showLoading(true, 'Loading weather data...');
-
-            let radarLoadSuccess = false;
-            let outlookLoadSuccess = false;
-
-            // --- Load NEXRAD Data ---
-            try {
-                let radarResult;
-                if (animationMode && selectedTimes.length > 0) {
-                    // Use already selected times for animation
-                    const firstTime = new Date(selectedTimes[0].timestamp * 1000);
-                    const lastTime = new Date(selectedTimes[selectedTimes.length - 1].timestamp * 1000);
-
-                    const startH = String(firstTime.getHours()).padStart(2, '0');
-                    const startM = String(firstTime.getMinutes()).padStart(2, '0');
-                    const endH = String(lastTime.getHours()).padStart(2, '0');
-                    const endM = String(lastTime.getMinutes()).padStart(2, '0');
-
-                    const response = await fetch(`http://localhost:5000/api/nexrad/animation_frames?station=${station}&date=${dateInput}&product=${product}&start_time=${startH}:${startM}&end_time=${endH}:${endM}`);
-                    radarResult = await response.json();
-
-                    if (radarResult.success && radarResult.animation_frames && radarResult.animation_frames.length > 0) {
-                        animationFrames = radarResult.animation_frames;
-                        setupRadarAnimation();
-                        radarLoadSuccess = true;
-                        showStatus(`Loaded ${animationFrames.length} radar animation frames.`, 'success');
-                    } else {
-                        showStatus(`No radar animation frames found or error: ${radarResult.error || 'Unknown error'}`, 'error');
-                    }
-
-                } else if (animationMode) {
-                    // If animation mode is on but no specific times selected, use the range
-                    const response = await fetch(`http://localhost:5000/api/nexrad/animation_frames?station=${station}&date=${dateInput}&product=${product}&start_time=${startTime}&end_time=${endTime}`);
-                    radarResult = await response.json();
-
-                    if (radarResult.success && radarResult.animation_frames && radarResult.animation_frames.length > 0) {
-                        animationFrames = radarResult.animation_frames;
-                        setupRadarAnimation();
-                        radarLoadSuccess = true;
-                        showStatus(`Loaded ${animationFrames.length} radar animation frames.`, 'success');
-                    } else {
-                        showStatus(`No radar animation frames found for the specified range or error: ${radarResult.error || 'Unknown error'}`, 'error');
-                    }
-
-                } else {
-                    // Single frame mode
-                    const dateObj = new Date(dateInput);
-                    const currentHour = dateObj.getHours();
-                    const currentMinute = dateObj.getMinutes(); // Use current minute for single frame
-
-                    const response = await fetch(`http://localhost:5000/api/nexrad/single_frame?station=${station}&date=${dateInput}&product=${product}&hour=${currentHour}&minute=${currentMinute}`);
-                    radarResult = await response.json();
-
-                    if (radarResult.success && radarResult.image_url) {
-                        displayRadarFrame(radarResult); // This function handles adding the image overlay
-                        radarLoadSuccess = true;
-                        showStatus(`Loaded single radar frame for ${station} at ${currentHour}:${currentMinute}.`, 'success');
-                    } else {
-                        showStatus(`No single radar frame found or error: ${radarResult.error || 'Unknown error'}`, 'error');
-                    }
+            },
+            "/api/spc/available-dates": {
+                "method": "GET",
+                "description": "Get list of available SPC outlook dates"
+            },
+            "/api/nexrad/stations": {
+                "method": "GET",
+                "description": "Get list of available NEXRAD radar stations"
+            },
+            "/api/nexrad/available_times": {
+                "method": "GET",
+                "description": "Get available scan times for a NEXRAD station and date (approximate)",
+                "parameters": {
+                    "station": "NEXRAD station code (e.g., KTLX)",
+                    "date": "Date in YYYY-MM-DD format"
                 }
-            } catch (error) {
-                console.error('Error fetching NEXRAD data:', error);
-                showStatus('Failed to load NEXRAD data. Check backend connection or data availability.', 'error');
-            } finally {
-                showLoading(false); // Hide loading after radar attempt
-            }
-
-            // --- Load SPC Outlook Data ---
-            showLoading(true, 'Loading SPC outlook data...'); // Show loading for outlook too
-            try {
-                const response = await fetch(`http://localhost:5000/api/spc/outlook?date=${dateInput}&type=${outlookType}`);
-                const result = await response.json();
-                
-                if (result.success && result.data && result.data.features && result.data.features.length > 0) {
-                    if (outlookLayer) {
-                        map.removeLayer(outlookLayer);
-                    }
-                    outlookLayer = L.geoJSON(result.data, {
-                        style: styleOutlook,
-                        onEachFeature: onEachOutlookFeature
-                    }).addTo(map);
-                    currentOutlookGeoJSON = result.data;
-                    createSPCLegend(outlookType);
-                    outlookLoadSuccess = true;
-                    showStatus(`Loaded ${outlookType} outlook for ${dateInput}.`, 'success');
-                } else {
-                    showStatus(`No SPC outlook found for ${dateInput} or error: ${result.error || 'Unknown error'}`, 'error');
+            },
+            "/api/nexrad/single_frame": {
+                "method": "GET",
+                "description": "Get a single NEXRAD radar frame as GeoTIFF",
+                "parameters": {
+                    "station": "NEXRAD station code",
+                    "date": "Date in YYYY-MM-DD format",
+                    "hour": "Hour (0-23)",
+                    "minute": "Minute (0-59)",
+                    "product": "Radar product: reflectivity or velocity (default: reflectivity)",
+                    "source": "Data source: AWS, GOOGLE, NCEI (default: AWS)"
                 }
-            } catch (error) {
-                console.error('Error fetching SPC outlook:', error);
-                showStatus('Failed to load SPC outlook data. Check backend connection.', 'error');
-            } finally {
-                showLoading(false); // Hide loading after outlook attempt
+            },
+            "/api/nexrad/animation_frames": {
+                "method": "GET",
+                "description": "Get multiple NEXRAD radar frames for animation as GeoTIFFs",
+                "parameters": {
+                    "station": "NEXRAD station code",
+                    "date": "Date in YYYY-MM-DD format",
+                    "start_time": "Start time in HH:MM format",
+                    "end_time": "End time in HH:MM format",
+                    "product": "Radar product: reflectivity or velocity (default: reflectivity)",
+                    "source": "Data source: AWS, GOOGLE, NCEI (default: AWS)"
+                }
             }
+        },
+        "notes": "Ensure required Python packages (pyart, scipy, boto3, requests, numpy, matplotlib, gdal) are installed."
+    })
 
-            if (radarLoadSuccess && outlookLoadSuccess) {
-                showStatus('All data loaded successfully!', 'success');
-            } else if (radarLoadSuccess) {
-                showStatus('Radar data loaded, but SPC outlook could not be loaded.', 'info');
-            } else if (outlookLoadSuccess) {
-                showStatus('SPC outlook loaded, but radar data could not be loaded.', 'info');
-            } else {
-                showStatus('No data could be loaded. Please check parameters and backend.', 'error');
-            }
-        }
+if __name__ == '__main__':
+    # Clean up any residual old GeoTIFFs before starting
+    if os.path.exists(NEXRAD_OUTPUT_DIR):
+        shutil.rmtree(NEXRAD_OUTPUT_DIR)
+        logger.info(f"Cleaned up existing NEXRAD output directory: {NEXRAD_OUTPUT_DIR}")
+    os.makedirs(NEXRAD_OUTPUT_DIR, exist_ok=True) # Recreate fresh
 
-        // --- Initial Setup and Event Listeners ---
-        document.addEventListener('DOMContentLoaded', () => {
-            initMap();
-            fetchRadarStations(); // Populate radar station dropdown
-
-            // Set default date to today
-            document.getElementById('dateInput').valueAsDate = new Date();
-
-            // Set default time for animation range
-            const now = new Date();
-            const currentHour = now.getHours();
-            const currentMinute = Math.floor(now.getMinutes() / 5) * 5; // Round to nearest 5 min
-            const defaultStartTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), currentHour - 1, currentMinute);
-            const defaultEndTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), currentHour, currentMinute);
-            document.getElementById('startTime').value = `${String(defaultStartTime.getHours()).padStart(2, '0')}:${String(defaultStartTime.getMinutes()).padStart(2, '0')}`;
-            document.getElementById('endTime').value = `${String(defaultEndTime.getHours()).padStart(2, '0')}:${String(defaultEndTime.getMinutes()).padStart(2, '0')}`;
-
-
-            // Event listeners for controls
-            document.getElementById('opacity').addEventListener('input', (e) => updateOpacity(e.target.value));
-
-            // Initial call to set opacity display
-            updateOpacity(document.getElementById('opacity').value);
-
-            // Initial load of combined data on page load (optional, can be commented out)
-            // loadCombinedData(); 
-        });
-
-    </script>
-</body>
-</html>
+    print(f"Starting Weather Data Backend Server. NEXRAD GeoTIFFs will be stored in: {NEXRAD_OUTPUT_DIR}")
+    print("API will be available at: http://localhost:5000")
+    print("\nTo use this with your HTML files:")
+    print("1. Ensure your HTML files (NexradMapViewer.html, OutlookMapTest.html) are configured to fetch data from http://localhost:5000/api/...")
+    print("2. For NexradMapViewer.html, you'll need to update its JavaScript functions (e.g., loadRadarData, generateAnimationFrames) to make actual fetch requests to /api/nexrad/single_frame and /api/nexrad/animation_frames respectively.")
+    print("3. For OutlookMapTest.html, it already uses /api/spc/outlook, so it should work out of the box with this backend.")
+    print("4. You can open NexradMapViewer.html or OutlookMapTest.html directly in your browser after starting this server.")
+    
+    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False) # use_reloader=False to prevent multiple runs
