@@ -1,0 +1,9 @@
+Flask
+Flask-Cors
+requests
+boto3
+numpy
+pyart
+matplotlib
+scipy
+Pillow
