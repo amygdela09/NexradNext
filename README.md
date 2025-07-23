@@ -93,55 +93,6 @@ Prerequisites
 
         For manual installation (e.g., Windows): Download the appropriate wheel file (GDAL‑x.x.x‑cpXX‑cpXXm‑win_amd64.whl) from a reliable source like Gohlke's Python Wheels and install it using pip install path/to/your/GDAL‑x.x.x‑cpXX‑cpXXm‑win_amd64.whl.
 
-Project Structure
-
-Create the following file structure in your chosen project directory:
-
-your_project_folder/
-├── app.py             # The Python Flask backend code
-├── index.html         # The combined HTML/JavaScript frontend code
-└── nexrad_data_output/ # This directory will be automatically created by app.py for temporary GeoTIFFs
-
-Backend Setup (app.py)
-
-    Save the Code: Copy the entire Python Flask application code provided in the previous response and save it as app.py inside your your_project_folder/.
-
-    Run the Backend: Open your terminal or command prompt, navigate to your_project_folder/, and run:
-
-    python app.py
-
-    The server should start on http://localhost:5000. Keep this terminal window open while using the web application.
-
-Frontend Setup (index.html)
-
-    Save the Code: Copy the entire HTML and JavaScript code provided in the previous response and save it as index.html inside your your_project_folder/.
-
-Usage
-
-    Open in Browser: Once the Flask backend (app.py) is running, open the index.html file in your web browser. You can typically do this by navigating to file:///path/to/your_project_folder/index.html or by simply double-clicking the index.html file.
-
-    Select Date: Choose a date using the date picker in the sidebar.
-
-    Select Radar Station & Product: Choose a NEXRAD radar station from the dropdown and select either "Reflectivity" or "Velocity" as the product.
-
-    Select Outlook Type: Choose the desired SPC outlook type (Categorical, Tornado, Wind, or Hail).
-
-    Load Combined Data: Click the "🚀 Load Combined Data" button. The application will fetch the radar and outlook data for the selected date and display them on the map.
-
-    Radar Animation (Optional):
-
-        Check the "Download Time Series for Animation" checkbox.
-
-        Set a "Start Time" and "End Time" for the animation range, or click "🔍 Find Available Times" to see a list of potential scans for the day and select specific ones.
-
-        Click "📥 Load Selected Scans" (if using specific times) or "🚀 Load Combined Data" (if using a time range) to load the animation frames.
-
-        Use the "▶️ Play" button to start/pause the animation, the slider to scrub through frames, and the "Animation Speed" slider to adjust playback speed.
-
-    Adjust Opacity: Use the "Radar Opacity" slider to make the radar overlay more or less transparent.
-
-    Explore Map: Pan, zoom, and interact with the Leaflet map. Click on SPC outlook polygons for more details.
-
 API Endpoints
 
 The Flask backend exposes the following API endpoints:
@@ -230,7 +181,6 @@ The Flask backend exposes the following API endpoints:
 
 Potential Future Contributions
 
-This project lays a solid foundation for a comprehensive weather visualization tool. Here are several areas for future development:
 Data & Content Enhancements:
 
     More Weather Data Layers:
