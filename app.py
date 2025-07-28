@@ -278,12 +278,16 @@ class SPCDataFetcher:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'MyNEXRADApp/1.0'})
-    
+
     def get_outlook_url(self, date_str, outlook_type, time_str, day=1):
         year = date_str[:4]
+        base_url = f"{self.BASE_URL}/archive/{year}"
+        
+        # Remove the `_cat` suffix from the date string if it's a categorical forecast
         if outlook_type == 'categorical':
-            return f"{self.BASE_URL}/archive/{year}/day{day}otlk_{date_str}_{time_str}_cat.kml"
-        return f"{self.BASE_URL}/archive/{year}/day{day}otlk_{date_str}_{time_str}_{outlook_type}.kml"
+            date_str = '_'.join(date_str.split('_')[:-1])
+        
+        return f"{base_url}/day{day}otlk_{date_str}_{time_str}.{outlook_type}.kmz"
     
     def fetch_kml_data(self, url):
         try:
@@ -294,6 +298,7 @@ class SPCDataFetcher:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching KML data from {url}: {e}")
             return None
+
 
     def parse_kml_to_geojson(self, kml_content, outlook_type):
         try:
