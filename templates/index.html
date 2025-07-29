@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Weather Viewer: NEXRAD & SPC</title>
     
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
+    <!-- <link rel="stylesheet" href="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.css" /> -->
 
     <style>
         body, html {
@@ -134,10 +134,11 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
-    <script src="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.js"></script>
-    <script src="https://unpkg.com/leaflet-kmz@latest/dist/leaflet-kmz.js"></script>
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/leaflet-kmz@1.0.9/dist/leaflet-kmz.min.js"></script>
+    <!-- <script type="text/javascript" src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.js"></script>
+    <script type="text/javascript" src="https://unpkg.com/leaflet-kmz@latest/dist/leaflet-kmz.js"></script> -->
     
     <script>
         // --- Global Variables ---
@@ -200,12 +201,17 @@
                 if (result.success && result.url) {
                     showStatus('Outlook found. Loading on map...', 'info');
                     // Use leaflet-kmz to load the outlook directly from the URL
+					console.log('we almost made it');
+					console.log(result.url);
+					//
+					//this is where it fails
+					//
+					//
                     spcLayer = new L.KML(result.url, {
                         async: true,
                         // Override default styles to make it visible on a dark map
                         style: (feature) => ({ color: feature.properties.fill, weight: 2, opacity: 0.8, fillOpacity: 0.3 })
                     });
-                    
                     spcLayer.on('loaded', (e) => {
                         map.fitBounds(e.target.getBounds());
                         showStatus('SPC Outlook loaded successfully.', 'info');
