@@ -5,57 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Weather Viewer: NEXRAD & SPC</title>
     
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
-    <!-- <link rel="stylesheet" href="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.css" /> -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.css" />
 
     <style>
-        body, html {
-            height: 100%;
-            width: 100%;
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #1a1a1a;
-            color: white;
-            overflow: hidden;
-        }
+        body, html { height: 100%; width: 100%; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; background-color: #1a1a1a; color: white; overflow: hidden; }
         .container { display: flex; width: 100%; height: 100%; }
-        .sidebar {
-            width: 350px;
-            background: #2c2c2c;
-            padding: 20px;
-            overflow-y: auto;
-            border-right: 1px solid #444;
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
+        .sidebar { width: 350px; background: #2c2c2c; padding: 20px; overflow-y: auto; border-right: 1px solid #444; display: flex; flex-direction: column; gap: 15px; }
         h1 { font-size: 1.6rem; color: #4dabf7; text-align: center; margin-bottom: 10px; }
         .control-group { padding: 15px; background: #3a3a3a; border-radius: 8px; }
         .control-group h3 { margin-bottom: 10px; color: #81c784; font-size: 1rem; }
         .form-group { margin-bottom: 12px; }
         label { display: block; margin-bottom: 5px; font-size: 0.9rem; font-weight: bold; }
-        input, select {
-            width: 100%;
-            padding: 8px;
-            border: 1px solid #555;
-            border-radius: 4px;
-            background: #252525;
-            color: white;
-        }
+        input, select { width: 100%; padding: 8px; border: 1px solid #555; border-radius: 4px; background: #252525; color: white; }
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); }
-        button {
-            width: 100%;
-            padding: 10px;
-            background: #4dabf7;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 1rem;
-            font-weight: bold;
-            transition: background-color 0.2s;
-        }
+        button { width: 100%; padding: 10px; background: #4dabf7; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: background-color 0.2s; }
         button:hover { background: #3c9ae0; }
         button:disabled { background: #555; cursor: not-allowed; }
         .time-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -111,7 +75,14 @@
 
             <div class="control-group">
                 <h3>🌪️ SPC Outlook</h3>
-                 <button id="loadOutlook" onclick="loadSPCOutlook()">Load Categorical Outlook</button>
+                <div class="form-group">
+                    <label for="outlookType">Outlook Type:</label>
+                    <select id="outlookType">
+                        <option value="categorical">Categorical (General Severe)</option>
+                        <option value="tornado">Tornado</option>
+                    </select>
+                </div>
+                 <button id="loadOutlook" onclick="loadSPCOutlook()">Load Selected Outlook</button>
             </div>
 
             <div class="loading" id="loading" style="display: none;">
@@ -134,17 +105,15 @@
         </div>
     </div>
 
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
-	<script src="https://cdn.jsdelivr.net/npm/leaflet-kmz@1.0.9/dist/leaflet-kmz.min.js"></script>
-    <!-- <script type="text/javascript" src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
-    <script type="text/javascript" src="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.js"></script>
-    <script type="text/javascript" src="https://unpkg.com/leaflet-kmz@latest/dist/leaflet-kmz.js"></script> -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
+    <script src="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.js"></script>
     
     <script>
         // --- Global Variables ---
         let map;
-        let radarAnimationLayer = null; // Will hold the leaflet-geotiff animation instance
-        let spcLayer = null; // Will hold the leaflet-kmz instance
+        let radarAnimationLayer = null;
+        let spcLayer = null;
         
         // --- Map Initialization ---
         function initMap() {
@@ -153,17 +122,9 @@
                 attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
             }).addTo(map);
 
-            // Define a custom color scale for leaflet-geotiff that matches NEXRAD reflectivity
             L.LeafletGeotiff.colorScales.add("radar", {
-                "0": "#0096db", // Light blue
-                "10": "#0050b4", // Blue
-                "20": "#01e201", // Light green
-                "30": "#00a500", // Green
-                "40": "#fefe00", // Yellow
-                "50": "#ff9600", // Orange
-                "60": "#fe0000", // Red
-                "70": "#c40000", // Dark Red
-                "80": "#ff00f3" // Magenta
+                "0": "#0096db", "10": "#0050b4", "20": "#01e201", "30": "#00a500",
+                "40": "#fefe00", "50": "#ff9600", "60": "#fe0000", "70": "#c40000", "80": "#ff00f3"
             });
         }
 
@@ -188,41 +149,44 @@
             if (spcLayer) map.removeLayer(spcLayer);
             
             const date = document.getElementById('dateInput').value;
+            const outlookType = document.getElementById('outlookType').value; // Get selected type
+
             if (!date) {
                 showStatus('Please select a date for the SPC outlook.', 'error');
                 return;
             }
 
-            showLoading(true, 'Finding SPC outlook...');
+            showLoading(true, `Loading ${outlookType} outlook...`);
             try {
-                const response = await fetch(`http://localhost:5000/api/spc/outlook_url?date=${date}`);
+                // FIX: Fetch GeoJSON data directly from the backend
+                const response = await fetch(`http://localhost:5000/api/spc/outlook?date=${date}&type=${outlookType}`);
                 const result = await response.json();
 
-                if (result.success && result.url) {
-                    showStatus('Outlook found. Loading on map...', 'info');
-                    // Use leaflet-kmz to load the outlook directly from the URL
-					console.log('we almost made it');
-					console.log(result.url);
-					//
-					//this is where it fails
-					//
-					//
-                    spcLayer = new L.KML(result.url, {
-                        async: true,
-                        // Override default styles to make it visible on a dark map
-                        style: (feature) => ({ color: feature.properties.fill, weight: 2, opacity: 0.8, fillOpacity: 0.3 })
-                    });
-                    spcLayer.on('loaded', (e) => {
-                        map.fitBounds(e.target.getBounds());
-                        showStatus('SPC Outlook loaded successfully.', 'info');
-                    });
-                    
-                    spcLayer.addTo(map);
+                if (result.success && result.data) {
+                    // Use L.geoJSON to plot the data
+                    spcLayer = L.geoJSON(result.data, {
+                        // The GeoJSON from SPC now includes styling info in properties
+                        style: (feature) => ({
+                            color: feature.properties.STROKE || "#ffffff",
+                            fillColor: feature.properties.FILL || "#808080",
+                            weight: 2,
+                            opacity: 0.9,
+                            fillOpacity: 0.5
+                        }),
+                        onEachFeature: (feature, layer) => {
+                            if (feature.properties && feature.properties.LABEL) {
+                                layer.bindPopup(`<strong>Risk Level: ${feature.properties.LABEL}</strong>`);
+                            }
+                        }
+                    }).addTo(map);
+
+                    map.fitBounds(spcLayer.getBounds());
+                    showStatus(`${outlookType.charAt(0).toUpperCase() + outlookType.slice(1)} outlook loaded.`, 'info');
                 } else {
                     showStatus(`Error: ${result.error || 'Could not find SPC outlook.'}`, 'error');
                 }
             } catch (error) {
-                showStatus('Failed to fetch SPC outlook URL.', 'error');
+                showStatus('Failed to fetch SPC outlook data.', 'error');
             } finally {
                 showLoading(false);
             }
@@ -254,11 +218,9 @@
                     
                     showStatus(`Found ${frameUrls.length} frames. Loading...`, 'info');
                     
-                    // Use leaflet-geotiff to create an animation layer
                     radarAnimationLayer = L.leafletGeotiff(frameUrls, {
                         band: 0,
-                        displayMin: 0,
-                        displayMax: 75,
+                        displayMin: 0, displayMax: 75,
                         colorScale: "radar",
                         clamp: true,
                         opacity: 0.7,
@@ -282,7 +244,6 @@
         }
 
         // --- Animation Control Functions ---
-
         function setupAnimationControls(times) {
             const controls = document.getElementById('animationControls');
             const slider = document.getElementById('frameSlider');
@@ -340,7 +301,6 @@
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('dateInput').value = today;
         });
-
     </script>
 </body>
 </html>
