@@ -28,9 +28,7 @@ Current Capabilities:
 
     SPC Severe Weather Outlooks:
 
-        Fetch SPC Day 1 Convective Outlooks (Categorical, Tornado, Wind, Hail) in KML format.
-
-        Parse KML data and convert it into GeoJSON format for easy rendering on Leaflet.
+        Fetch SPC Day 1 Convective Outlooks (Categorical, Tornado, Wind, Hail) in GEOJson format.
 
         Display outlook polygons with appropriate color-coding based on risk levels.
 
