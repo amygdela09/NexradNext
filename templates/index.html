@@ -158,24 +158,23 @@
 
             showLoading(true, `Loading ${outlookType} outlook...`);
             try {
-                // FIX: Fetch GeoJSON data directly from the backend
                 const response = await fetch(`http://localhost:5000/api/spc/outlook?date=${date}&type=${outlookType}`);
                 const result = await response.json();
 
                 if (result.success && result.data) {
-                    // Use L.geoJSON to plot the data
                     spcLayer = L.geoJSON(result.data, {
-                        // The GeoJSON from SPC now includes styling info in properties
+                        // FIX: Changed properties to lowercase to match the GeoJSON data
                         style: (feature) => ({
-                            color: feature.properties.STROKE || "#ffffff",
-                            fillColor: feature.properties.FILL || "#808080",
+                            color: feature.properties.stroke || "#ffffff",       // Was STROKE
+                            fillColor: feature.properties.fill || "#808080",   // Was FILL
                             weight: 2,
                             opacity: 0.9,
-                            fillOpacity: 0.5
+                            fillOpacity: 0.65 // Slightly more opaque
                         }),
                         onEachFeature: (feature, layer) => {
-                            if (feature.properties && feature.properties.LABEL) {
-                                layer.bindPopup(`<strong>Risk Level: ${feature.properties.LABEL}</strong>`);
+                            // The popup label is correct
+                            if (feature.properties && feature.properties.LABEL2) {
+                                layer.bindPopup(`<strong>Risk Level: ${feature.properties.LABEL2}</strong>`);
                             }
                         }
                     }).addTo(map);
