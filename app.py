@@ -36,57 +36,47 @@ logger.info(f"NEXRAD output will be stored in: {NEXRAD_OUTPUT_DIR}")
 # --- Data Access and Processing Classes ---
 
 class NexradDownloader:
-    """Handles downloading of NEXRAD data."""
+    # This class is stable and remains unchanged
     def __init__(self):
         self.session = requests.Session()
         self.s3_client = boto3.client('s3', config=botocore.client.Config(signature_version=botocore.UNSIGNED))
 
     def get_available_sites(self):
-        """FIX: Restored this function to populate the station dropdown."""
         return {
-            'KABR': 'Aberdeen, SD', 'KABX': 'Albuquerque, NM', 'KAKQ': 'Norfolk/Wakefield, VA',
-            'KAMA': 'Amarillo, TX', 'KAMX': 'Miami, FL', 'KAPX': 'Gaylord, MI', 'KARX': 'La Crosse, WI',
-            'KATX': 'Seattle/Tacoma, WA', 'KBBX': 'Beale AFB, CA', 'KBGM': 'Binghamton, NY',
-            'KBHX': 'Eureka, CA', 'KBIS': 'Bismarck, ND', 'KBLX': 'Billings, MT', 'KBMX': 'Birmingham, AL',
-            'KBOX': 'Boston, MA', 'KBRO': 'Brownsville, TX', 'KBUF': 'Buffalo, NY', 'KBYX': 'Key West, FL',
-            'KCAE': 'Columbia, SC', 'KCBW': 'Caribou, ME', 'KCBX': 'Boise, ID', 'KCCX': 'State College, PA',
-            'KCLE': 'Cleveland, OH', 'KCLX': 'Charleston, SC', 'KCRP': 'Corpus Christi, TX',
-            'KCXX': 'Burlington, VT', 'KCYS': 'Cheyenne, WY', 'KDAX': 'Sacramento, CA',
-            'KDDC': 'Dodge City, KS', 'KDFX': 'Laughlin AFB, TX', 'KDGX': 'Jackson, MS',
-            'KDIX': 'Philadelphia, PA', 'KDLH': 'Duluth, MN', 'KDMX': 'Des Moines, IA',
-            'KDOX': 'Dover AFB, DE', 'KDTX': 'Detroit, MI', 'KDVN': 'Davenport, IA',
-            'KDYX': 'Dyess AFB, TX', 'KEAX': 'Kansas City, MO', 'KEMX': 'Tucson, AZ', 'KENX': 'Albany, NY',
-            'KEOX': 'Fort Rucker, AL', 'KEPZ': 'El Paso, TX', 'KESX': 'Las Vegas, NV',
-            'KEVX': 'Eglin AFB, FL', 'KEWX': 'San Antonio, TX', 'KEYX': 'Edwards AFB, CA',
-            'KFCX': 'Roanoke, VA', 'KFDR': 'Altus AFB, OK', 'KFFC': 'Atlanta, GA',
-            'KFSD': 'Sioux Falls, SD', 'KFSX': 'Flagstaff, AZ', 'KFTG': 'Denver, CO',
-            'KFWD': 'Dallas/Fort Worth, TX', 'KGGW': 'Glasgow, MT', 'KGJX': 'Grand Junction, CO',
-            'KGLD': 'Goodland, KS', 'KGRB': 'Green Bay, WI', 'KGRK': 'Fort Hood, TX',
-            'KGRR': 'Grand Rapids, MI', 'KGSP': 'Greenville/Spartanburg, SC', 'KGWX': 'Columbus AFB, MS',
-            'KGYX': 'Portland, ME', 'KHGX': 'Houston, TX', 'KHNX': 'San Joaquin Valley, CA',
-            'KHPX': 'Fort Campbell, KY', 'KHTX': 'Huntsville, AL', 'KICT': 'Wichita, KS',
-            'KICX': 'Cedar City, UT', 'KILN': 'Cincinnati/Wilmington, OH', 'KILX': 'Lincoln, IL',
-            'KIND': 'Indianapolis, IN', 'KINX': 'Tulsa, OK', 'KIWA': 'Phoenix, AZ',
-            'KIWX': 'Fort Wayne, IN', 'KJAX': 'Jacksonville, FL', 'KJGX': 'Robins AFB, GA',
-            'KJKL': 'Jackson, KY', 'KLBB': 'Lubbock, TX', 'KLCH': 'Lake Charles, LA',
-            'KLIX': 'New Orleans, LA', 'KLNX': 'North Platte, NE', 'KLOT': 'Chicago, IL',
-            'KLRX': 'Elko, NV', 'KLSX': 'St. Louis, MO', 'KLTX': 'Wilmington, NC',
-            'KLVX': 'Las Vegas, NV', 'KLWX': 'Sterling, VA', 'KMAF': 'Midland/Odessa, TX',
-            'KMAX': 'Medford, OR', 'KMHX': 'Morehead City, NC', 'KMKX': 'Milwaukee, WI',
-            'KMLB': 'Melbourne, FL', 'KMOB': 'Mobile, AL', 'KMPX': 'Minneapolis/St. Paul, MN',
-            'KMQT': 'Marquette, MI', 'KMRX': 'Knoxville, TN', 'KMSX': 'Missoula, MT',
-            'KMTX': 'Salt Lake City, UT', 'KMUX': 'San Francisco, CA', 'KMVX': 'Grand Forks, ND',
-            'KNKX': 'San Diego, CA', 'KNQA': 'Memphis, TN', 'KOAX': 'Omaha, NE',
-            'KOHX': 'Nashville, TN', 'KOKX': 'New York City, NY', 'KOTX': 'Spokane, WA',
-            'KPAH': 'Paducah, KY', 'KPBZ': 'Pittsburgh, PA', 'KPDT': 'Pendleton, OR',
-            'KPOE': 'Fort Polk, LA', 'KPUX': 'Pueblo, CO', 'KRAX': 'Raleigh/Durham, NC',
-            'KRGX': 'Reno, NV', 'KRIW': 'Riverton, WY', 'KRLX': 'Charleston, WV',
-            'KRTX': 'Portland, OR', 'KSFX': 'Pocatello/Idaho Falls, ID', 'KSGF': 'Springfield, MO',
-            'KSHV': 'Shreveport, LA', 'KSJT': 'San Angelo, TX', 'KSOX': 'Santa Ana Mountains, CA',
-            'KSRX': 'Fort Smith, AR', 'KTBW': 'Tampa, FL', 'KTFX': 'Great Falls, MT',
-            'KTLH': 'Tallahassee, FL', 'KTLX': 'Oklahoma City, OK', 'KTWX': 'Topeka, KS',
-            'KTYX': 'Montague, NY', 'KUDX': 'Rapid City, SD', 'KUEX': 'Hastings, NE',
-            'KVNX': 'Vance AFB, OK', 'KVTX': 'Roanoke, VA', 'KVWX': 'Evansville, IN', 'KYUX': 'Yuma, AZ'
+            'KABR': 'Aberdeen, SD', 'KABX': 'Albuquerque, NM', 'KAKQ': 'Norfolk/Wakefield, VA', 'KAMA': 'Amarillo, TX',
+            'KAMX': 'Miami, FL', 'KAPX': 'Gaylord, MI', 'KARX': 'La Crosse, WI', 'KATX': 'Seattle/Tacoma, WA',
+            'KBBX': 'Beale AFB, CA', 'KBGM': 'Binghamton, NY', 'KBHX': 'Eureka, CA', 'KBIS': 'Bismarck, ND',
+            'KBLX': 'Billings, MT', 'KBMX': 'Birmingham, AL', 'KBOX': 'Boston, MA', 'KBRO': 'Brownsville, TX',
+            'KBUF': 'Buffalo, NY', 'KBYX': 'Key West, FL', 'KCAE': 'Columbia, SC', 'KCBW': 'Caribou, ME',
+            'KCBX': 'Boise, ID', 'KCCX': 'State College, PA', 'KCLE': 'Cleveland, OH', 'KCLX': 'Charleston, SC',
+            'KCRP': 'Corpus Christi, TX', 'KCXX': 'Burlington, VT', 'KCYS': 'Cheyenne, WY', 'KDAX': 'Sacramento, CA',
+            'KDDC': 'Dodge City, KS', 'KDFX': 'Laughlin AFB, TX', 'KDGX': 'Jackson, MS', 'KDIX': 'Philadelphia, PA',
+            'KDLH': 'Duluth, MN', 'KDMX': 'Des Moines, IA', 'KDOX': 'Dover AFB, DE', 'KDTX': 'Detroit, MI',
+            'KDVN': 'Davenport, IA', 'KDYX': 'Dyess AFB, TX', 'KEAX': 'Kansas City, MO', 'KEMX': 'Tucson, AZ',
+            'KENX': 'Albany, NY', 'KEOX': 'Fort Rucker, AL', 'KEPZ': 'El Paso, TX', 'KESX': 'Las Vegas, NV',
+            'KEVX': 'Eglin AFB, FL', 'KEWX': 'San Antonio, TX', 'KEYX': 'Edwards AFB, CA', 'KFCX': 'Roanoke, VA',
+            'KFDR': 'Altus AFB, OK', 'KFFC': 'Atlanta, GA', 'KFSD': 'Sioux Falls, SD', 'KFSX': 'Flagstaff, AZ',
+            'KFTG': 'Denver, CO', 'KFWD': 'Dallas/Fort Worth, TX', 'KGGW': 'Glasgow, MT', 'KGJX': 'Grand Junction, CO',
+            'KGLD': 'Goodland, KS', 'KGRB': 'Green Bay, WI', 'KGRK': 'Fort Hood, TX', 'KGRR': 'Grand Rapids, MI',
+            'KGSP': 'Greenville/Spartanburg, SC', 'KGWX': 'Columbus AFB, MS', 'KGYX': 'Portland, ME',
+            'KHGX': 'Houston, TX', 'KHNX': 'San Joaquin Valley, CA', 'KHPX': 'Fort Campbell, KY', 'KHTX': 'Huntsville, AL',
+            'KICT': 'Wichita, KS', 'KICX': 'Cedar City, UT', 'KILN': 'Cincinnati/Wilmington, OH', 'KILX': 'Lincoln, IL',
+            'KIND': 'Indianapolis, IN', 'KINX': 'Tulsa, OK', 'KIWA': 'Phoenix, AZ', 'KIWX': 'Fort Wayne, IN',
+            'KJAX': 'Jacksonville, FL', 'KJGX': 'Robins AFB, GA', 'KJKL': 'Jackson, KY', 'KLBB': 'Lubbock, TX',
+            'KLCH': 'Lake Charles, LA', 'KLIX': 'New Orleans, LA', 'KLNX': 'North Platte, NE', 'KLOT': 'Chicago, IL',
+            'KLRX': 'Elko, NV', 'KLSX': 'St. Louis, MO', 'KLTX': 'Wilmington, NC', 'KLVX': 'Las Vegas, NV',
+            'KLWX': 'Sterling, VA', 'KMAF': 'Midland/Odessa, TX', 'KMAX': 'Medford, OR', 'KMHX': 'Morehead City, NC',
+            'KMKX': 'Milwaukee, WI', 'KMLB': 'Melbourne, FL', 'KMOB': 'Mobile, AL', 'KMPX': 'Minneapolis/St. Paul, MN',
+            'KMQT': 'Marquette, MI', 'KMRX': 'Knoxville, TN', 'KMSX': 'Missoula, MT', 'KMTX': 'Salt Lake City, UT',
+            'KMUX': 'San Francisco, CA', 'KMVX': 'Grand Forks, ND', 'KNKX': 'San Diego, CA', 'KNQA': 'Memphis, TN',
+            'KOAX': 'Omaha, NE', 'KOHX': 'Nashville, TN', 'KOKX': 'New York City, NY', 'KOTX': 'Spokane, WA',
+            'KPAH': 'Paducah, KY', 'KPBZ': 'Pittsburgh, PA', 'KPDT': 'Pendleton, OR', 'KPOE': 'Fort Polk, LA',
+            'KPUX': 'Pueblo, CO', 'KRAX': 'Raleigh/Durham, NC', 'KRGX': 'Reno, NV', 'KRIW': 'Riverton, WY',
+            'KRLX': 'Charleston, WV', 'KRTX': 'Portland, OR', 'KSFX': 'Pocatello/Idaho Falls, ID',
+            'KSGF': 'Springfield, MO', 'KSHV': 'Shreveport, LA', 'KSJT': 'San Angelo, TX', 'KSOX': 'Santa Ana Mountains, CA',
+            'KSRX': 'Fort Smith, AR', 'KTBW': 'Tampa, FL', 'KTFX': 'Great Falls, MT', 'KTLH': 'Tallahassee, FL',
+            'KTLX': 'Oklahoma City, OK', 'KTWX': 'Topeka, KS', 'KTYX': 'Montague, NY', 'KUDX': 'Rapid City, SD',
+            'KUEX': 'Hastings, NE', 'KVNX': 'Vance AFB, OK', 'KVTX': 'Roanoke, VA', 'KVWX': 'Evansville, IN', 'KYUX': 'Yuma, AZ'
         }
 
     def _get_aws_urls(self, station, start_time, end_time):
@@ -149,6 +139,7 @@ class NexradDownloader:
         return successful_downloads
 
 class NEXRADProcessor:
+    # This class is stable and remains unchanged
     def nexrad_to_geotiff(self, nexrad_file, output_geotiff, product='reflectivity'):
         try:
             radar = pyart.io.read(nexrad_file)
@@ -185,28 +176,38 @@ class NEXRADProcessor:
         dataset = None
         return {'geotiff_path': output_geotiff}
 
-class SPCDataFinder:
-    """Finds the URL for the correct SPC outlook KMZ file."""
-    BASE_URL = "https://www.spc.noaa.gov/products/outlook/"
+class SPCDataFetcher:
+    """FIX: Simplified to fetch GeoJSON directly from SPC's new endpoints."""
+    BASE_URL = "https://www.spc.noaa.gov/products/outlook/archive/"
 
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({'User-Agent': 'MyWeatherApp/1.0'})
 
-    def find_latest_outlook_url(self, date_obj, day=1):
-        """Tries common issuance times to find the latest available KMZ URL."""
+    def get_outlook_geojson(self, date_obj, outlook_type, day=1):
+        """Tries common issuance times to find the latest available GeoJSON data."""
+        type_map = {
+            'categorical': 'cat',
+            'tornado': 'torn'
+        }
+        type_short = type_map.get(outlook_type, 'cat') # Default to categorical
+
         outlook_times = ['2000', '1630', '1300', '1200', '0100']
         for time_str in outlook_times:
             date_str_url = date_obj.strftime('%Y%m%d')
-            url = f"{self.BASE_URL}archive/{date_obj.year}/day{day}otlk_{date_str_url}_{time_str}.kmz"
+            url = f"{self.BASE_URL}{date_obj.year}/day{day}otlk_{date_str_url}_{time_str}_{type_short}.lyr.geojson"
+            
             try:
-                # Use a HEAD request to check for existence without downloading the whole file
-                response = self.session.head(url, timeout=5, allow_redirects=True)
+                logger.info(f"Attempting to fetch SPC GeoJSON from: {url}")
+                response = self.session.get(url, timeout=10)
                 if response.status_code == 200:
-                    logger.info(f"Found valid SPC outlook URL: {url}")
-                    return url
+                    logger.info(f"Successfully fetched GeoJSON from {url}")
+                    return response.json() # Return the parsed JSON data
             except requests.exceptions.RequestException:
+                # This will happen for 404s, timeouts, etc. We just try the next time.
                 continue
+        
+        # If the loop finishes without returning, no data was found
         return None
 
 
@@ -214,7 +215,7 @@ class SPCDataFinder:
 CORS(app)
 nexrad_downloader = NexradDownloader()
 nexrad_processor = NEXRADProcessor()
-spc_finder = SPCDataFinder()
+spc_fetcher = SPCDataFetcher()
 
 @app.route('/')
 def serve_vue_app():
@@ -222,7 +223,6 @@ def serve_vue_app():
 
 @app.route('/api/nexrad/stations')
 def get_nexrad_stations():
-    """FIX: Added back this endpoint to populate the station dropdown."""
     stations = nexrad_downloader.get_available_sites()
     return jsonify({"success": True, "stations": stations})
 
@@ -268,10 +268,12 @@ def get_nexrad_animation_frames():
     finally:
         shutil.rmtree(temp_dir)
 
-@app.route('/api/spc/outlook_url')
-def get_spc_outlook_url():
-    """FIX: Returns a direct URL to the latest valid KMZ file for the frontend to handle."""
+@app.route('/api/spc/outlook')
+def get_spc_outlook():
+    """FIX: Fetches direct GeoJSON for different outlook types."""
     date_param = request.args.get('date')
+    outlook_type = request.args.get('type', 'categorical') # Expects 'categorical' or 'tornado'
+
     if not date_param:
         return jsonify({"error": "Date parameter is required"}), 400
     
@@ -280,11 +282,12 @@ def get_spc_outlook_url():
     except (ValueError, TypeError):
         return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
 
-    url = spc_finder.find_latest_outlook_url(date_obj)
-    if url:
-        return jsonify({"success": True, "url": url})
+    geojson_data = spc_fetcher.get_outlook_geojson(date_obj, outlook_type)
+    
+    if geojson_data:
+        return jsonify({"success": True, "data": geojson_data})
     else:
-        return jsonify({"error": f"Could not find any SPC outlook for {date_param}."}), 404
+        return jsonify({"error": f"Could not find SPC '{outlook_type}' outlook for {date_param}."}), 404
 
 @app.route('/geotiff/<path:filename>')
 def serve_geotiff(filename):
