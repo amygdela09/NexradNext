@@ -28,6 +28,8 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+CORS(app) # Enable CORS for all origins
+
 NEXRAD_OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'nexrad_data_output')
 os.makedirs(NEXRAD_OUTPUT_DIR, exist_ok=True)
 logger.info(f"NEXRAD output will be stored in: {NEXRAD_OUTPUT_DIR}")
@@ -36,7 +38,6 @@ logger.info(f"NEXRAD output will be stored in: {NEXRAD_OUTPUT_DIR}")
 # --- Data Access and Processing Classes ---
 
 class NexradDownloader:
-    # This class is stable and remains unchanged
     def __init__(self):
         self.session = requests.Session()
         self.s3_client = boto3.client('s3', config=botocore.client.Config(signature_version=botocore.UNSIGNED))
@@ -112,7 +113,7 @@ class NexradDownloader:
             if os.path.exists(decompressed_path):
                 return decompressed_path
 
-            bucket_name, key = parsed_url.netloc, parsed_url.path.lstrip('/')
+            bucket_name, key = "noaa-nexrad-level2", parsed_url.path.lstrip('/')
             self.s3_client.download_file(bucket_name, key, output_path_gz)
 
             with gzip.open(output_path_gz, 'rb') as f_in, open(decompressed_path, 'wb') as f_out:
@@ -129,17 +130,17 @@ class NexradDownloader:
         urls = self._get_aws_urls(station, start_time, end_time)
         if not urls:
             return []
-
+        
+        logger.info(f"Found {len(urls)} files to process for {station} between {start_time} and {end_time}.")
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = [executor.submit(self._download_and_decompress_file, url, output_dir) for url in urls]
             results = [future.result() for future in as_completed(futures)]
 
-        successful_downloads = [res for res in results if res]
+        successful_downloads = sorted([res for res in results if res])
         logger.info(f"Successfully processed {len(successful_downloads)} raw files.")
         return successful_downloads
 
 class NEXRADProcessor:
-    # This class is stable and remains unchanged
     def nexrad_to_geotiff(self, nexrad_file, output_geotiff, product='reflectivity'):
         try:
             radar = pyart.io.read(nexrad_file)
@@ -164,33 +165,42 @@ class NEXRADProcessor:
 
         driver = gdal.GetDriverByName('GTiff')
         dataset = driver.Create(output_geotiff, 500, 500, 1, gdal.GDT_Float32, options=['COMPRESS=LZW'])
-        dataset.SetGeoTransform([grid.point_x['data'][0], grid.x['data'][1] - grid.x['data'][0], 0, 
-                                 grid.point_y['data'][-1], 0, grid.y['data'][0] - grid.y['data'][1]])
+        
+        # Correctly define the geotransform
+        # Top-left X, West-East pixel resolution, Rotation (0), Top-left Y, Rotation (0), North-South pixel resolution
+        transform = [
+            grid.x['data'][0] + grid.origin_longitude['data'], 
+            grid.x['data'][1] - grid.x['data'][0], 
+            0,
+            grid.y['data'][-1] + grid.origin_latitude['data'],
+            0,
+            grid.y['data'][0] - grid.y['data'][1] # This is negative
+        ]
+        
+        # Use the projection from the pyart grid
         srs = osr.SpatialReference()
-        srs.ImportFromEPSG(4326)
+        srs.ImportFromProj4(grid.projection['proj4'])
+        
+        dataset.SetGeoTransform(transform)
         dataset.SetProjection(srs.ExportToWkt())
+        
         band = dataset.GetRasterBand(1)
-        band.WriteArray(np.ma.filled(data, fill_value=np.nan))
-        band.SetNoDataValue(np.nan)
+        band.WriteArray(np.ma.filled(data, fill_value=-9999)) # Use a common NoData value
+        band.SetNoDataValue(-9999)
         dataset.FlushCache()
         dataset = None
         return {'geotiff_path': output_geotiff}
 
 class SPCDataFetcher:
-    """FIX: Simplified to fetch GeoJSON directly from SPC's new endpoints."""
     BASE_URL = "https://www.spc.noaa.gov/products/outlook/archive/"
 
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({'User-Agent': 'MyWeatherApp/1.0'})
+        self.session.headers.update({'User-Agent': 'MyWeatherApp/1.0 (Student Project)'})
 
     def get_outlook_geojson(self, date_obj, outlook_type, day=1):
-        """Tries common issuance times to find the latest available GeoJSON data."""
-        type_map = {
-            'categorical': 'cat',
-            'tornado': 'torn'
-        }
-        type_short = type_map.get(outlook_type, 'cat') # Default to categorical
+        type_map = {'categorical': 'cat', 'tornado': 'torn'}
+        type_short = type_map.get(outlook_type, 'cat')
 
         outlook_times = ['2000', '1630', '1300', '1200', '0100']
         for time_str in outlook_times:
@@ -200,19 +210,17 @@ class SPCDataFetcher:
             try:
                 logger.info(f"Attempting to fetch SPC GeoJSON from: {url}")
                 response = self.session.get(url, timeout=10)
-                if response.status_code == 200:
-                    logger.info(f"Successfully fetched GeoJSON from {url}")
-                    return response.json() # Return the parsed JSON data
-            except requests.exceptions.RequestException:
-                # This will happen for 404s, timeouts, etc. We just try the next time.
+                response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+                logger.info(f"Successfully fetched GeoJSON from {url}")
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Did not find SPC data at {url} (Reason: {e}). Trying next.")
                 continue
         
-        # If the loop finishes without returning, no data was found
         return None
 
 
 # --- Flask API Endpoints ---
-CORS(app)
 nexrad_downloader = NexradDownloader()
 nexrad_processor = NEXRADProcessor()
 spc_fetcher = SPCDataFetcher()
@@ -238,31 +246,34 @@ def get_nexrad_animation_frames():
         start_dt = datetime.strptime(f"{date_str} {start_time_str}", '%Y-%m-%d %H:%M')
         end_dt = datetime.strptime(f"{date_str} {end_time_str}", '%Y-%m-%d %H:%M')
     except (ValueError, TypeError):
-        return jsonify({"error": "Invalid date/time format."}), 400
+        return jsonify({"success": False, "error": "Invalid date/time format."}), 400
 
     temp_dir = tempfile.mkdtemp(prefix="nexrad_anim_")
     try:
         downloaded_files = nexrad_downloader.download_time_series(station, start_dt, end_dt, temp_dir)
         if not downloaded_files:
-            return jsonify({"error": "No NEXRAD data found for this time range."}), 404
+            return jsonify({"success": False, "error": "No NEXRAD data found for this time range."}), 404
 
         frames = []
-        for raw_filepath in sorted(downloaded_files):
+        for raw_filepath in downloaded_files:
             filename_base = os.path.basename(raw_filepath)
             output_geotiff = os.path.join(NEXRAD_OUTPUT_DIR, f"{filename_base}_{product}.tif")
-            if not os.path.exists(output_geotiff):
-                nexrad_processor.nexrad_to_geotiff(raw_filepath, output_geotiff, product)
             
-            if os.path.exists(output_geotiff):
-                match = re.search(r'(\d{8})_(\d{6})', filename_base)
-                time_str = datetime.strptime(f"{match.group(1)}{match.group(2)}", '%Y%m%d%H%M%S').strftime('%H:%M:%S') if match else "N/A"
-                frames.append({
-                    "url": f"/geotiff/{os.path.basename(output_geotiff)}",
-                    "time": time_str
-                })
+            if not os.path.exists(output_geotiff):
+                result = nexrad_processor.nexrad_to_geotiff(raw_filepath, output_geotiff, product)
+                if not result:
+                    logger.warning(f"Skipping frame for {raw_filepath} due to processing error.")
+                    continue
+            
+            match = re.search(r'(\d{8})_(\d{6})', filename_base)
+            time_str = datetime.strptime(f"{match.group(1)}{match.group(2)}", '%Y%m%d%H%M%S').strftime('%H:%M:%S') if match else "N/A"
+            frames.append({
+                "url": f"/geotiff/{os.path.basename(output_geotiff)}",
+                "time": time_str
+            })
         
         if not frames:
-            return jsonify({"error": "Data downloaded, but failed to process into images."}), 500
+            return jsonify({"success": False, "error": "Data downloaded, but failed to process into images."}), 500
         
         return jsonify({"success": True, "frames": frames})
     finally:
@@ -270,24 +281,23 @@ def get_nexrad_animation_frames():
 
 @app.route('/api/spc/outlook')
 def get_spc_outlook():
-    """FIX: Fetches direct GeoJSON for different outlook types."""
     date_param = request.args.get('date')
-    outlook_type = request.args.get('type', 'categorical') # Expects 'categorical' or 'tornado'
+    outlook_type = request.args.get('type', 'categorical')
 
     if not date_param:
-        return jsonify({"error": "Date parameter is required"}), 400
+        return jsonify({"success": False, "error": "Date parameter is required"}), 400
     
     try:
         date_obj = datetime.strptime(date_param, '%Y-%m-%d')
     except (ValueError, TypeError):
-        return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+        return jsonify({"success": False, "error": "Invalid date format. Use YYYY-MM-DD."}), 400
 
     geojson_data = spc_fetcher.get_outlook_geojson(date_obj, outlook_type)
     
     if geojson_data:
         return jsonify({"success": True, "data": geojson_data})
     else:
-        return jsonify({"error": f"Could not find SPC '{outlook_type}' outlook for {date_param}."}), 404
+        return jsonify({"success": False, "error": f"Could not find SPC '{outlook_type}' outlook for {date_param}."}), 404
 
 @app.route('/geotiff/<path:filename>')
 def serve_geotiff(filename):
@@ -295,4 +305,4 @@ def serve_geotiff(filename):
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=5000)
