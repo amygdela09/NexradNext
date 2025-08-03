@@ -1,13 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
+{% block plugs %}
+<link href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/georaster@1.6.0/dist/georaster.browser.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/georaster-layer-for-leaflet@3.10.0/dist/v3/webpack/bundle/georaster-layer-for-leaflet.min.js"></script>
+{% endblock %}
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Weather Viewer: NEXRAD & SPC</title>
-    
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.css" />
-
     <style>
         body, html { height: 100%; width: 100%; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; background-color: #1a1a1a; color: white; overflow: hidden; }
         .container { display: flex; width: 100%; height: 100%; }
@@ -63,11 +65,11 @@
                 <div class="time-inputs">
                     <div class="form-group">
                         <label for="startTime">Start Time (UTC):</label>
-                        <input type="time" id="startTime" value="12:00">
+                        <input type="time" id="startTime" value="12:00" step="300">
                     </div>
                     <div class="form-group">
                         <label for="endTime">End Time (UTC):</label>
-                        <input type="time" id="endTime" value="13:00">
+                        <input type="time" id="endTime" value="13:00" step="300">
                     </div>
                 </div>
                  <button id="loadRadar" onclick="loadRadarAnimation()">Load Radar Animation</button>
@@ -95,7 +97,7 @@
             <div class="control-group" id="animationControls" style="display: none;">
                 <h3>🎬 Animation Controls</h3>
                 <button id="playPause" onclick="toggleAnimation()">▶️ Play</button>
-                <input type="range" id="frameSlider" min="0" max="0" value="0" oninput="setAnimationFrame(this.value)" style="margin-top: 10px;">
+                <input type="range" id="frameSlider" min="0" max="0" value="0" style="margin-top: 10px;">
                 <div id="currentTime">--:--</div>
             </div>
         </div>
@@ -105,27 +107,45 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://unpkg.com/geotiff@2.0.7/dist-browser/geotiff.js"></script>
-    <script src="https://unpkg.com/leaflet-geotiff@0.3.1/dist/leaflet-geotiff.js"></script>
-    
     <script>
         // --- Global Variables ---
         let map;
-        let radarAnimationLayer = null;
         let spcLayer = null;
+        const API_BASE_URL = 'http://localhost:5000';
+
+        // --- NEW Globals for georaster-layer-for-leaflet animation ---
+        let currentRadarLayer = null;
+        let radarFrames = {
+            georasters: [],
+            times: []
+        };
+        let animationState = {
+            interval: null,
+            currentIndex: 0
+        };
+
+        // --- NEW: Replaces the old color scale with a function ---
+        function getRadarColor(value) {
+            const val = parseFloat(value);
+            if (val < 0) return null; // Transparent for no-data values
+            if (val < 10) return "rgba(0, 150, 219, 0.5)"; 
+            if (val < 20) return "rgba(0, 80, 180, 0.6)"; 
+            if (val < 30) return "rgba(1, 226, 1, 0.7)"; 
+            if (val < 40) return "rgba(0, 165, 0, 0.7)";
+            if (val < 50) return "rgba(254, 254, 0, 0.7)"; 
+            if (val < 60) return "rgba(255, 150, 0, 0.8)"; 
+            if (val < 70) return "rgba(254, 0, 0, 0.8)"; 
+            return "rgba(255, 0, 243, 0.9)";
+        }
         
         // --- Map Initialization ---
         function initMap() {
-            map = L.map('map').setView([39.8, -98.5], 4);
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
-            }).addTo(map);
+            const cartoDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; CARTO' });
+            const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' });
+            const esriWorldImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '&copy; Esri' });
 
-            L.LeafletGeotiff.colorScales.add("radar", {
-                "0": "#0096db", "10": "#0050b4", "20": "#01e201", "30": "#00a500",
-                "40": "#fefe00", "50": "#ff9600", "60": "#fe0000", "70": "#c40000", "80": "#ff00f3"
-            });
+            map = L.map('map', { layers: [cartoDark] }).setView([39.8, -98.5], 4);
+            L.control.layers({ "Dark Mode": cartoDark, "Street Map": openStreetMap, "Satellite": esriWorldImagery }).addTo(map);
         }
 
         // --- UI Control Functions ---
@@ -144,13 +164,11 @@
         }
 
         // --- Data Loading Functions ---
-
-        async function loadSPCOutlook() {
+		async function loadSPCOutlook() {
             if (spcLayer) map.removeLayer(spcLayer);
             
             const date = document.getElementById('dateInput').value;
-            const outlookType = document.getElementById('outlookType').value; // Get selected type
-
+            const outlookType = document.getElementById('outlookType').value;
             if (!date) {
                 showStatus('Please select a date for the SPC outlook.', 'error');
                 return;
@@ -158,27 +176,13 @@
 
             showLoading(true, `Loading ${outlookType} outlook...`);
             try {
-                const response = await fetch(`http://localhost:5000/api/spc/outlook?date=${date}&type=${outlookType}`);
+                const response = await fetch(`${API_BASE_URL}/api/spc/outlook?date=${date}&type=${outlookType}`);
                 const result = await response.json();
-
                 if (result.success && result.data) {
                     spcLayer = L.geoJSON(result.data, {
-                        // FIX: Changed properties to lowercase to match the GeoJSON data
-                        style: (feature) => ({
-                            color: feature.properties.stroke || "#ffffff",       // Was STROKE
-                            fillColor: feature.properties.fill || "#808080",   // Was FILL
-                            weight: 2,
-                            opacity: 0.9,
-                            fillOpacity: 0.65 // Slightly more opaque
-                        }),
-                        onEachFeature: (feature, layer) => {
-                            // The popup label is correct
-                            if (feature.properties && feature.properties.LABEL2) {
-                                layer.bindPopup(`<strong>Risk Level: ${feature.properties.LABEL2}</strong>`);
-                            }
-                        }
+                        style: (f) => ({ color: f.properties.stroke, fillColor: f.properties.fill, weight: 2, opacity: 0.9, fillOpacity: 0.65 }),
+                        onEachFeature: (f, l) => l.bindPopup(`<strong>Risk: ${f.properties.LABEL2}</strong>`)
                     }).addTo(map);
-
                     map.fitBounds(spcLayer.getBounds());
                     showStatus(`${outlookType.charAt(0).toUpperCase() + outlookType.slice(1)} outlook loaded.`, 'info');
                 } else {
@@ -191,8 +195,13 @@
             }
         }
 
+        // --- NEW: loadRadarAnimation rewritten for georaster-layer-for-leaflet ---
         async function loadRadarAnimation() {
-            if (radarAnimationLayer) map.removeLayer(radarAnimationLayer);
+            // 1. Reset previous animation state
+            if (currentRadarLayer) map.removeLayer(currentRadarLayer);
+            if (animationState.interval) clearInterval(animationState.interval);
+            document.getElementById('animationControls').style.display = 'none';
+            document.getElementById('playPause').textContent = '▶️ Play';
             
             const station = document.getElementById('station').value;
             const date = document.getElementById('dateInput').value;
@@ -205,93 +214,120 @@
                 return;
             }
 
-            showLoading(true, 'Fetching radar data...');
+            showLoading(true, 'Fetching radar frame list...');
             try {
-                const url = `http://localhost:5000/api/nexrad/animation_frames?station=${station}&date=${date}&product=${product}&start_time=${startTime}&end_time=${endTime}`;
+                const url = `${API_BASE_URL}/api/nexrad/animation_frames?station=${station}&date=${date}&product=${product}&start_time=${startTime}&end_time=${endTime}`;
                 const response = await fetch(url);
                 const result = await response.json();
 
-                if (result.success && result.frames && result.frames.length > 0) {
-                    const frameUrls = result.frames.map(frame => frame.url);
-                    const frameTimes = result.frames.map(frame => frame.time);
-                    
-                    showStatus(`Found ${frameUrls.length} frames. Loading...`, 'info');
-                    
-                    radarAnimationLayer = L.leafletGeotiff(frameUrls, {
-                        band: 0,
-                        displayMin: 0, displayMax: 75,
-                        colorScale: "radar",
-                        clamp: true,
-                        opacity: 0.7,
-                        renderer: new L.LeafletGeotiff.CanvasRenderer()
-                    }).addTo(map);
-                    
-                    radarAnimationLayer.on('load', () => {
-                        map.fitBounds(radarAnimationLayer.getBounds());
-                        setupAnimationControls(frameTimes);
-                        showStatus('Radar animation loaded. Use controls to play.', 'info');
-                    });
-
-                } else {
+                if (!result.success || !result.frames || result.frames.length === 0) {
                     showStatus(`Error: ${result.error || 'No radar frames found.'}`, 'error');
+                    return;
                 }
+                
+                showLoading(true, `Loading ${result.frames.length} radar images...`);
+                
+                // 2. Fetch all GeoTIFFs in parallel and parse them
+                const frameUrls = result.frames.map(frame => `${API_BASE_URL}${frame.url}`);
+                const georasterPromises = frameUrls.map(url => fetch(url).then(res => res.arrayBuffer()).then(parseGeoraster));
+                
+                radarFrames.georasters = await Promise.all(georasterPromises);
+                radarFrames.times = result.frames.map(frame => frame.time);
+
+                // 3. Setup UI and display the first frame
+                setupAnimationControls();
+                displayFrame(0);
+                map.fitBounds(currentRadarLayer.getBounds());
+                showStatus('Radar animation loaded. Use controls to play.', 'info');
+
             } catch (error) {
-                showStatus('Failed to fetch radar animation data.', 'error');
+                showStatus('Failed to load or parse radar data.', 'error');
+                console.error("Radar processing error:", error);
             } finally {
                 showLoading(false);
             }
         }
 
-        // --- Animation Control Functions ---
-        function setupAnimationControls(times) {
+        // --- NEW: Animation Control Functions for georaster-layer-for-leaflet ---
+        function displayFrame(index) {
+            if (index >= radarFrames.georasters.length) return;
+            if (currentRadarLayer) map.removeLayer(currentRadarLayer);
+            
+            animationState.currentIndex = index;
+            
+            currentRadarLayer = new GeoRasterLayer({
+                georaster: radarFrames.georasters[index],
+                opacity: 0.7,
+                pixelValuesToColorFn: values => getRadarColor(values[0]),
+                resolution: 128 // Lower value for better performance
+            });
+            currentRadarLayer.addTo(map);
+
+            // Update UI
+            document.getElementById('frameSlider').value = index;
+            document.getElementById('currentTime').textContent = radarFrames.times[index];
+        }
+
+        function setupAnimationControls() {
             const controls = document.getElementById('animationControls');
             const slider = document.getElementById('frameSlider');
-            const playPauseBtn = document.getElementById('playPause');
             
-            slider.max = times.length - 1;
+            slider.max = radarFrames.georasters.length - 1;
             slider.value = 0;
             
             slider.oninput = () => {
-                const frameIndex = parseInt(slider.value);
-                radarAnimationLayer.setFrame(frameIndex);
-                document.getElementById('currentTime').textContent = times[frameIndex];
-            };
-            
-            playPauseBtn.onclick = () => {
-                if (radarAnimationLayer.isPlaying()) {
-                    radarAnimationLayer.pause();
-                    playPauseBtn.textContent = '▶️ Play';
-                } else {
-                    radarAnimationLayer.play();
-                    playPauseBtn.textContent = '⏸️ Pause';
+                if (animationState.interval) {
+                    clearInterval(animationState.interval);
+                    animationState.interval = null;
+                    document.getElementById('playPause').textContent = '▶️ Play';
                 }
+                displayFrame(parseInt(slider.value));
             };
-            
-            radarAnimationLayer.on('framechange', (e) => {
-                slider.value = e.frame;
-                document.getElementById('currentTime').textContent = times[e.frame];
-            });
 
             controls.style.display = 'block';
+        }
+
+        function toggleAnimation() {
+            const playPauseBtn = document.getElementById('playPause');
+            if (animationState.interval) {
+                // Pause
+                clearInterval(animationState.interval);
+                animationState.interval = null;
+                playPauseBtn.textContent = '▶️ Play';
+            } else {
+                // Play
+                playPauseBtn.textContent = '⏸️ Pause';
+                animationState.interval = setInterval(() => {
+                    let nextIndex = animationState.currentIndex + 1;
+                    if (nextIndex >= radarFrames.georasters.length) {
+                        nextIndex = 0; // Loop back to the start
+                    }
+                    displayFrame(nextIndex);
+                }, 500); // 500ms delay between frames
+            }
         }
 
         // --- Initial Setup ---
         async function fetchRadarStations() {
             try {
-                const response = await fetch('http://localhost:5000/api/nexrad/stations');
+                const response = await fetch(`${API_BASE_URL}/api/nexrad/stations`);
                 const result = await response.json();
                 if (result.success) {
                     const stationSelect = document.getElementById('station');
+                    stationSelect.innerHTML = '';
                     Object.entries(result.stations).forEach(([code, name]) => {
-                        stationSelect.innerHTML += `<option value="${code}">${code} - ${name}</option>`;
+                        const option = document.createElement('option');
+                        option.value = code;
+                        option.textContent = `${code} - ${name}`;
+                        stationSelect.appendChild(option);
                     });
                     if (stationSelect.querySelector('option[value="KTLX"]')) {
                         stationSelect.value = 'KTLX';
                     }
                 }
             } catch (error) {
-                showStatus('Failed to fetch radar stations.', 'error');
-            }
+                showStatus('Failed to fetch radar stations. Is the server running?', 'error');
+			}
         }
 
         document.addEventListener('DOMContentLoaded', () => {
