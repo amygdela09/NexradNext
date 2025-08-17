@@ -9,7 +9,7 @@ import pyart
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
-from osgeo import gdal, osr
+from osgeo import gdal, osr, gdal_array
 import tempfile
 import logging
 import json
@@ -51,8 +51,7 @@ class NexradDownloader:
             'KBUF': 'Buffalo, NY', 'KBYX': 'Key West, FL', 'KCAE': 'Columbia, SC', 'KCBW': 'Caribou, ME',
             'KCBX': 'Boise, ID', 'KCCX': 'State College, PA', 'KCLE': 'Cleveland, OH', 'KCLX': 'Charleston, SC',
             'KCRP': 'Corpus Christi, TX', 'KCXX': 'Burlington, VT', 'KCYS': 'Cheyenne, WY', 'KDAX': 'Sacramento, CA',
-            'KDDC': 'Dodge City, KS', 'KDFX': 'Laughlin AFB, TX', 'KDGX': 'Jackson, MS', 'KDIX': 'Philadelphia, PA',
-            'KDLH': 'Duluth, MN', 'KDMX': 'Des Moines, IA', 'KDOX': 'Dover AFB, DE', 'KDTX': 'Detroit, MI',
+            'KDDC': 'Dodge City, KS', 'KDMX': 'Des Moines, IA', 'KDOX': 'Dover AFB, DE', 'KDTX': 'Detroit, MI',
             'KDVN': 'Davenport, IA', 'KDYX': 'Dyess AFB, TX', 'KEAX': 'Kansas City, MO', 'KEMX': 'Tucson, AZ',
             'KENX': 'Albany, NY', 'KEOX': 'Fort Rucker, AL', 'KEPZ': 'El Paso, TX', 'KESX': 'Las Vegas, NV',
             'KEVX': 'Eglin AFB, FL', 'KEWX': 'San Antonio, TX', 'KEYX': 'Edwards AFB, CA', 'KFCX': 'Roanoke, VA',
@@ -143,53 +142,59 @@ class NexradDownloader:
 class NEXRADProcessor:
     def nexrad_to_geotiff(self, nexrad_file, output_geotiff, product='reflectivity'):
         try:
-            radar = pyart.io.read(nexrad_file)
+            # Use the correct function for reading NEXRAD Level 2 archives
+            radar = pyart.io.read_nexrad_archive(nexrad_file)
         except Exception as e:
-            logger.error(f"Py-ART could not read file {nexrad_file}: {e}")
+            logger.error(f"Py-ART could not read NEXRAD Level 2 file {nexrad_file}: {e}")
+            return None
+        
+        if not radar:
+            logger.error(f"File {nexrad_file} was read, but is not a valid Py-ART Radar object.")
             return None
 
         available_fields = list(radar.fields.keys())
         if product not in available_fields:
             fallback = 'reflectivity' if 'reflectivity' in available_fields else (available_fields[0] if available_fields else None)
-            if not fallback: return None
+            if not fallback: 
+                logger.error(f"No valid fields found in file: {nexrad_file}")
+                return None
             product = fallback
+        
+        try:
+            # Use the more robust grid_from_radars function
+            grid = pyart.map.grid_from_radars(
+                (radar,),
+                grid_shape=(1, 500, 500), # Smaller grid for performance
+                grid_limits=(
+                    (0, 10000), # height
+                    (-230000, 230000), # y
+                    (-230000, 230000) # x
+                ),
+                fields=[product],
+                weighting_function='nearest'
+            )
+        except Exception as e:
+            logger.error(f"Py-ART could not grid data from {nexrad_file}: {e}")
+            return None
 
-        grid = radar.to_grid(
-            (1, 500, 500),
-            ((-230000, 230000), (-230000, 230000), (0, 10000)),
-            fields=[product],
-            grid_origin=(radar.latitude['data'][0], radar.longitude['data'][0]),
-            projparams={'proj': 'aeqd', 'lat_0': radar.latitude['data'][0], 'lon_0': radar.longitude['data'][0]}
-        )
-        data = grid.fields[product]['data'][0]
+        if not grid:
+            logger.error(f"Gridding failed for {nexrad_file}")
+            return None
 
-        driver = gdal.GetDriverByName('GTiff')
-        dataset = driver.Create(output_geotiff, 500, 500, 1, gdal.GDT_Float32, options=['COMPRESS=LZW'])
-        
-        # Correctly define the geotransform
-        # Top-left X, West-East pixel resolution, Rotation (0), Top-left Y, Rotation (0), North-South pixel resolution
-        transform = [
-            grid.x['data'][0] + grid.origin_longitude['data'], 
-            grid.x['data'][1] - grid.x['data'][0], 
-            0,
-            grid.y['data'][-1] + grid.origin_latitude['data'],
-            0,
-            grid.y['data'][0] - grid.y['data'][1] # This is negative
-        ]
-        
-        # Use the projection from the pyart grid
-        srs = osr.SpatialReference()
-        srs.ImportFromProj4(grid.projection['proj4'])
-        
-        dataset.SetGeoTransform(transform)
-        dataset.SetProjection(srs.ExportToWkt())
-        
-        band = dataset.GetRasterBand(1)
-        band.WriteArray(np.ma.filled(data, fill_value=-9999)) # Use a common NoData value
-        band.SetNoDataValue(-9999)
-        dataset.FlushCache()
-        dataset = None
-        return {'geotiff_path': output_geotiff}
+        # Use the dedicated Py-ART GeoTIFF writer
+        try:
+            pyart.io.write_grid_geotiff(
+                grid,
+                output_geotiff.replace('.tif', ''), # The function adds the extension
+                product,
+                rgb=False,
+                warp=False,
+            )
+            logger.info(f"Successfully created GeoTIFF: {output_geotiff}")
+            return {'geotiff_path': output_geotiff}
+        except Exception as e:
+            logger.error(f"Failed to write GeoTIFF for {nexrad_file}: {e}")
+            return None
 
 class SPCDataFetcher:
     BASE_URL = "https://www.spc.noaa.gov/products/outlook/archive/"
@@ -257,7 +262,8 @@ def get_nexrad_animation_frames():
         frames = []
         for raw_filepath in downloaded_files:
             filename_base = os.path.basename(raw_filepath)
-            output_geotiff = os.path.join(NEXRAD_OUTPUT_DIR, f"{filename_base}_{product}.tif")
+            output_geotiff_name = f"{os.path.splitext(filename_base)[0]}_{product}.tif"
+            output_geotiff = os.path.join(NEXRAD_OUTPUT_DIR, output_geotiff_name)
             
             if not os.path.exists(output_geotiff):
                 result = nexrad_processor.nexrad_to_geotiff(raw_filepath, output_geotiff, product)
