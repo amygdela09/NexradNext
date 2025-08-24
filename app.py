@@ -9,7 +9,7 @@ import pyart
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
-from osgeo import gdal, osr, gdal_array
+from osgeo import gdal, osr
 import tempfile
 import logging
 import json
@@ -33,9 +33,6 @@ CORS(app) # Enable CORS for all origins
 NEXRAD_OUTPUT_DIR = os.path.join(tempfile.gettempdir(), 'nexrad_data_output')
 os.makedirs(NEXRAD_OUTPUT_DIR, exist_ok=True)
 logger.info(f"NEXRAD output will be stored in: {NEXRAD_OUTPUT_DIR}")
-
-
-# --- Data Access and Processing Classes ---
 
 class NexradDownloader:
     def __init__(self):
@@ -139,36 +136,45 @@ class NexradDownloader:
         logger.info(f"Successfully processed {len(successful_downloads)} raw files.")
         return successful_downloads
 
+# This is the corrected version of the class
 class NEXRADProcessor:
+    """A class to handle NEXRAD data downloading, processing, and conversion."""
+
     def nexrad_to_geotiff(self, nexrad_file, output_geotiff, product='reflectivity'):
+        """
+        Processes a NEXRAD Level 2 file into a gridded GeoTIFF.
+
+        Args:
+            nexrad_file (str): The path to the input NEXRAD file.
+            output_geotiff (str): The desired path for the output GeoTIFF.
+            product (str): The radar product to process (e.g., 'reflectivity').
+
+        Returns:
+            dict: A dictionary with the path to the GeoTIFF on success, or None on failure.
+        """
         try:
-            # Use the correct function for reading NEXRAD Level 2 archives
-            radar = pyart.io.read_nexrad_archive(nexrad_file)
+            radar = pyart.io.read(nexrad_file)
         except Exception as e:
-            logger.error(f"Py-ART could not read NEXRAD Level 2 file {nexrad_file}: {e}")
-            return None
-        
-        if not radar:
-            logger.error(f"File {nexrad_file} was read, but is not a valid Py-ART Radar object.")
+            logger.error(f"Py-ART could not read file {nexrad_file}: {e}")
             return None
 
         available_fields = list(radar.fields.keys())
         if product not in available_fields:
             fallback = 'reflectivity' if 'reflectivity' in available_fields else (available_fields[0] if available_fields else None)
-            if not fallback: 
+            if not fallback:
                 logger.error(f"No valid fields found in file: {nexrad_file}")
                 return None
             product = fallback
-        
+
         try:
-            # Use the more robust grid_from_radars function
+            # Grid the radar data using a standard function
             grid = pyart.map.grid_from_radars(
                 (radar,),
-                grid_shape=(1, 500, 500), # Smaller grid for performance
+                grid_shape=(1, 500, 500),
                 grid_limits=(
-                    (0, 10000), # height
-                    (-230000, 230000), # y
-                    (-230000, 230000) # x
+                    (0, 10000), 
+                    (-230000, 230000), 
+                    (-230000, 230000)
                 ),
                 fields=[product],
                 weighting_function='nearest'
@@ -181,21 +187,22 @@ class NEXRADProcessor:
             logger.error(f"Gridding failed for {nexrad_file}")
             return None
 
-        # Use the dedicated Py-ART GeoTIFF writer
         try:
+            # Use Py-ART's dedicated function to write the GeoTIFF
             pyart.io.write_grid_geotiff(
                 grid,
-                output_geotiff.replace('.tif', ''), # The function adds the extension
-                product,
-                rgb=False,
-                warp=False,
+                output_geotiff,
+                field=product,
+                rgb=True,
+                cmap='NWSRef',
+                warp=True,
             )
-            logger.info(f"Successfully created GeoTIFF: {output_geotiff}")
+            logger.info(f"Successfully created GeoTIFF using Py-ART: {output_geotiff}")
             return {'geotiff_path': output_geotiff}
         except Exception as e:
-            logger.error(f"Failed to write GeoTIFF for {nexrad_file}: {e}")
+            logger.error(f"Failed to write GeoTIFF with Py-ART: {e}")
             return None
-
+            
 class SPCDataFetcher:
     BASE_URL = "https://www.spc.noaa.gov/products/outlook/archive/"
 
