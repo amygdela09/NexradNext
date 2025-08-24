@@ -1,313 +1,180 @@
 <!DOCTYPE html>
 <html lang="en">
-{% block plugs %}
-<link href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/georaster@1.6.0/dist/georaster.browser.bundle.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/georaster-layer-for-leaflet@3.10.0/dist/v3/webpack/bundle/georaster-layer-for-leaflet.min.js"></script>
-{% endblock %}
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Weather Viewer: NEXRAD & SPC</title>
+    <link href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/georaster@1.6.0/dist/georaster.browser.bundle.min.js"></script>
     <style>
         body, html { height: 100%; width: 100%; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; background-color: #1a1a1a; color: white; overflow: hidden; }
         .container { display: flex; width: 100%; height: 100%; }
-        .sidebar { width: 350px; background: #2c2c2c; padding: 20px; overflow-y: auto; border-right: 1px solid #444; display: flex; flex-direction: column; gap: 15px; }
-        h1 { font-size: 1.6rem; color: #4dabf7; text-align: center; margin-bottom: 10px; }
-        .control-group { padding: 15px; background: #3a3a3a; border-radius: 8px; }
-        .control-group h3 { margin-bottom: 10px; color: #81c784; font-size: 1rem; }
-        .form-group { margin-bottom: 12px; }
-        label { display: block; margin-bottom: 5px; font-size: 0.9rem; font-weight: bold; }
-        input, select { width: 100%; padding: 8px; border: 1px solid #555; border-radius: 4px; background: #252525; color: white; }
-        input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); }
-        button { width: 100%; padding: 10px; background: #4dabf7; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: background-color 0.2s; }
-        button:hover { background: #3c9ae0; }
-        button:disabled { background: #555; cursor: not-allowed; }
-        .time-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .map-container { flex: 1; position: relative; }
+        .sidebar { width: 350px; background: #2c2c2c; padding: 20px; overflow-y: auto; border-right: 1px solid #444; display: flex; flex-direction: column; }
+        .content { flex-grow: 1; position: relative; }
         #map { height: 100%; width: 100%; }
-        .loading { display: flex; align-items: center; justify-content: center; padding: 15px; color: #4dabf7; }
-        .spinner { border: 3px solid rgba(255,255,255,0.2); border-radius: 50%; border-top: 3px solid #4dabf7; width: 25px; height: 25px; animation: spin 1s linear infinite; margin-right: 10px;}
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .status { padding: 10px; margin-top: 10px; border-radius: 4px; display: none; }
-        .status.info { background: #1e496a; color: #90caf9; }
-        .status.error { background: #6d201b; color: #ef9a9a; }
-        #currentTime { text-align: center; font-weight: bold; margin-top: 5px; }
+        .input-group { margin-bottom: 15px; }
+        .input-group label { display: block; margin-bottom: 5px; font-weight: bold; }
+        .input-group select, .input-group input, .input-group button { width: 100%; padding: 10px; box-sizing: border-box; border: 1px solid #555; background: #3c3c3c; color: white; border-radius: 8px; }
+        .status-bar { padding: 10px; text-align: center; font-style: italic; background: #444; border-radius: 8px; margin-top: 20px; }
+        .status-bar.error { background: #d32f2f; }
+        .status-bar.success { background: #388e3c; }
+        .button-group { display: flex; gap: 10px; margin-top: 20px; }
+        .button-group button { flex: 1; padding: 12px; font-weight: bold; border: none; cursor: pointer; border-radius: 8px; transition: background-color 0.3s; }
+        #fetchButton { background-color: #1e88e5; color: white; }
+        #fetchButton:hover { background-color: #1565c0; }
+        #playButton { background-color: #43a047; color: white; }
+        #playButton:hover { background-color: #2e7d32; }
+        #spcButton { background-color: #f57c00; color: white; }
+        #spcButton:hover { background-color: #ef6c00; }
+        h2 { margin-top: 30px; border-bottom: 1px solid #555; padding-bottom: 10px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="sidebar">
             <h1>Weather Viewer</h1>
-            
-            <div class="control-group">
-                <h3>🗓️ General Settings</h3>
-                <div class="form-group">
-                    <label for="dateInput">Date:</label>
-                    <input type="date" id="dateInput" />
-                </div>
-            </div>
 
-            <div class="control-group">
-                <h3>📡 NEXRAD Radar</h3>
-                <div class="form-group">
-                    <label for="station">Radar Station:</label>
-                    <select id="station"></select>
-                </div>
-                <div class="form-group">
-                    <label for="product">Product:</label>
-                    <select id="product">
-                        <option value="reflectivity">Reflectivity</option>
-                        <option value="velocity">Velocity</option>
-                    </select>
-                </div>
-                <div class="time-inputs">
-                    <div class="form-group">
-                        <label for="startTime">Start Time (UTC):</label>
-                        <input type="time" id="startTime" value="12:00" step="300">
-                    </div>
-                    <div class="form-group">
-                        <label for="endTime">End Time (UTC):</label>
-                        <input type="time" id="endTime" value="13:00" step="300">
-                    </div>
-                </div>
-                 <button id="loadRadar" onclick="loadRadarAnimation()">Load Radar Animation</button>
+            <!-- NEXRAD Section -->
+            <h2>NEXRAD Data</h2>
+            <div class="input-group">
+                <label for="station">NEXRAD Station:</label>
+                <select id="station"></select>
             </div>
-
-            <div class="control-group">
-                <h3>🌪️ SPC Outlook</h3>
-                <div class="form-group">
-                    <label for="outlookType">Outlook Type:</label>
-                    <select id="outlookType">
-                        <option value="categorical">Categorical (General Severe)</option>
-                        <option value="tornado">Tornado</option>
-                    </select>
-                </div>
-                 <button id="loadOutlook" onclick="loadSPCOutlook()">Load Selected Outlook</button>
+            <div class="input-group">
+                <label for="dateInput">Date:</label>
+                <input type="date" id="dateInput">
             </div>
-
-            <div class="loading" id="loading" style="display: none;">
-                <div class="spinner"></div>
-                <span id="loadingText"></span>
+            <div class="input-group">
+                <label for="product">Product:</label>
+                <select id="product">
+                    <option value="reflectivity">Reflectivity</option>
+                    <option value="velocity">Velocity</option>
+                </select>
+            </div>
+            <div class="input-group">
+                <label for="startTime">Start Time (UTC):</label>
+                <input type="time" id="startTime" value="00:00">
+            </div>
+            <div class="input-group">
+                <label for="endTime">End Time (UTC):</label>
+                <input type="time" id="endTime" value="00:30">
+            </div>
+            <div class="button-group">
+                <button id="fetchButton">Fetch & Display Frames</button>
+            </div>
+            <div class="button-group">
+                <button id="playButton">Play Animation</button>
             </div>
             
-            <div id="status" class="status"></div>
-            
-            <div class="control-group" id="animationControls" style="display: none;">
-                <h3>🎬 Animation Controls</h3>
-                <button id="playPause" onclick="toggleAnimation()">▶️ Play</button>
-                <input type="range" id="frameSlider" min="0" max="0" value="0" style="margin-top: 10px;">
-                <div id="currentTime">--:--</div>
+            <!-- SPC Section -->
+            <h2>SPC Outlook</h2>
+            <div class="input-group">
+                <label for="spcDate">Date:</label>
+                <input type="date" id="spcDate">
             </div>
+            <div class="input-group">
+                <label for="spcType">Type:</label>
+                <select id="spcType">
+                    <option value="categorical">Categorical</option>
+                    <option value="hail">Hail</option>
+                    <option value="tornado">Tornado</option>
+                    <option value="wind">Wind</option>
+                </select>
+            </div>
+            <div class="button-group">
+                <button id="spcButton">Fetch SPC Outlook</button>
+            </div>
+
+            <div id="statusBar" class="status-bar">Status: Ready</div>
         </div>
-        
-        <div class="map-container">
+        <div class="content">
             <div id="map"></div>
         </div>
     </div>
-
     <script>
-        // --- Global Variables ---
-        let map;
-        let spcLayer = null;
-        const API_BASE_URL = 'http://localhost:5000';
+        const API_BASE_URL = window.location.origin;
+        const map = L.map('map').setView([39.8283, -98.5795], 4);
+        let currentImageOverlay = null;
+        let frames = [];
+        let currentIndex = 0;
+        let animationInterval = null;
+        let spcLayerGroup = L.layerGroup().addTo(map);
 
-        // --- NEW Globals for georaster-layer-for-leaflet animation ---
-        let currentRadarLayer = null;
-        let radarFrames = {
-            georasters: [],
-            times: []
-        };
-        let animationState = {
-            interval: null,
-            currentIndex: 0
-        };
-
-        // --- NEW: Replaces the old color scale with a function ---
-        function getRadarColor(value) {
-            const val = parseFloat(value);
-            if (val < 0) return null; // Transparent for no-data values
-            if (val < 10) return "rgba(0, 150, 219, 0.5)"; 
-            if (val < 20) return "rgba(0, 80, 180, 0.6)"; 
-            if (val < 30) return "rgba(1, 226, 1, 0.7)"; 
-            if (val < 40) return "rgba(0, 165, 0, 0.7)";
-            if (val < 50) return "rgba(254, 254, 0, 0.7)"; 
-            if (val < 60) return "rgba(255, 150, 0, 0.8)"; 
-            if (val < 70) return "rgba(254, 0, 0, 0.8)"; 
-            return "rgba(255, 0, 243, 0.9)";
-        }
-        
         // --- Map Initialization ---
         function initMap() {
-            const cartoDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; CARTO' });
-            const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OpenStreetMap' });
-            const esriWorldImagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '&copy; Esri' });
-
-            map = L.map('map', { layers: [cartoDark] }).setView([39.8, -98.5], 4);
-            L.control.layers({ "Dark Mode": cartoDark, "Street Map": openStreetMap, "Satellite": esriWorldImagery }).addTo(map);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                minZoom: 2,
+                maxZoom: 18,
+                opacity: 0.5
+            }).addTo(map);
         }
 
-        // --- UI Control Functions ---
-        function showLoading(show, message) {
-            document.getElementById('loading').style.display = show ? 'flex' : 'none';
-            document.getElementById('loadingText').textContent = message || '';
-            document.getElementById('loadRadar').disabled = show;
-            document.getElementById('loadOutlook').disabled = show;
+        // --- Status Message Utility ---
+        function showStatus(message, type = 'info') {
+            const statusBar = document.getElementById('statusBar');
+            statusBar.textContent = `Status: ${message}`;
+            statusBar.className = `status-bar ${type}`;
         }
 
-        function showStatus(message, type) {
-            const statusDiv = document.getElementById('status');
-            statusDiv.textContent = message;
-            statusDiv.className = `status ${type}`;
-            statusDiv.style.display = 'block';
-        }
+        // --- NEXRAD Functions ---
+        async function displayFrame(index) {
+            if (index < 0 || index >= frames.length) {
+                return;
+            }
+            currentIndex = index;
+            const frame = frames[index];
+            showStatus(`Displaying frame ${currentIndex + 1}/${frames.length} (${frame.time})`);
 
-        // --- Data Loading Functions ---
-		async function loadSPCOutlook() {
-            if (spcLayer) map.removeLayer(spcLayer);
+            if (currentImageOverlay) {
+                map.removeLayer(currentImageOverlay);
+            }
+
+            // Using L.imageOverlay to display the pre-colored GeoTIFF
+            currentImageOverlay = L.imageOverlay(frame.url, [[0, 0], [0, 0]]);
+            currentImageOverlay.addTo(map);
             
-            const date = document.getElementById('dateInput').value;
-            const outlookType = document.getElementById('outlookType').value;
-            if (!date) {
-                showStatus('Please select a date for the SPC outlook.', 'error');
+            // Fetch the GeoTIFF to get its bounds
+            try {
+                const response = await fetch(frame.url);
+                const arrayBuffer = await response.arrayBuffer();
+                const georaster = await parseGeoraster(arrayBuffer);
+                
+                const bounds = [
+                    [georaster.ymin, georaster.xmin],
+                    [georaster.ymax, georaster.xmax]
+                ];
+                currentImageOverlay.setBounds(bounds);
+                
+                map.fitBounds(bounds);
+                showStatus(`Frame loaded: ${frame.time}`, 'success');
+            } catch (error) {
+                showStatus(`Error displaying GeoTIFF: ${error.message}`, 'error');
+                console.error('Error displaying GeoTIFF:', error);
+            }
+        }
+
+        function playAnimation() {
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+                document.getElementById('playButton').textContent = 'Play Animation';
                 return;
             }
 
-            showLoading(true, `Loading ${outlookType} outlook...`);
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/spc/outlook?date=${date}&type=${outlookType}`);
-                const result = await response.json();
-                if (result.success && result.data) {
-                    spcLayer = L.geoJSON(result.data, {
-                        style: (f) => ({ color: f.properties.stroke, fillColor: f.properties.fill, weight: 2, opacity: 0.9, fillOpacity: 0.65 }),
-                        onEachFeature: (f, l) => l.bindPopup(`<strong>Risk: ${f.properties.LABEL2}</strong>`)
-                    }).addTo(map);
-                    map.fitBounds(spcLayer.getBounds());
-                    showStatus(`${outlookType.charAt(0).toUpperCase() + outlookType.slice(1)} outlook loaded.`, 'info');
-                } else {
-                    showStatus(`Error: ${result.error || 'Could not find SPC outlook.'}`, 'error');
-                }
-            } catch (error) {
-                showStatus('Failed to fetch SPC outlook data.', 'error');
-            } finally {
-                showLoading(false);
-            }
-        }
-
-        // --- NEW: loadRadarAnimation rewritten for georaster-layer-for-leaflet ---
-        async function loadRadarAnimation() {
-            // 1. Reset previous animation state
-            if (currentRadarLayer) map.removeLayer(currentRadarLayer);
-            if (animationState.interval) clearInterval(animationState.interval);
-            document.getElementById('animationControls').style.display = 'none';
-            document.getElementById('playPause').textContent = '▶️ Play';
-            
-            const station = document.getElementById('station').value;
-            const date = document.getElementById('dateInput').value;
-            const product = document.getElementById('product').value;
-            const startTime = document.getElementById('startTime').value;
-            const endTime = document.getElementById('endTime').value;
-
-            if (!station || !date || !startTime || !endTime) {
-                showStatus('Please fill all radar parameters.', 'error');
+            if (frames.length === 0) {
+                showStatus("No frames to animate. Please fetch frames first.", 'error');
                 return;
             }
 
-            showLoading(true, 'Fetching radar frame list...');
-            try {
-                const url = `${API_BASE_URL}/api/nexrad/animation_frames?station=${station}&date=${date}&product=${product}&start_time=${startTime}&end_time=${endTime}`;
-                const response = await fetch(url);
-                const result = await response.json();
-
-                if (!result.success || !result.frames || result.frames.length === 0) {
-                    showStatus(`Error: ${result.error || 'No radar frames found.'}`, 'error');
-                    return;
-                }
-                
-                showLoading(true, `Loading ${result.frames.length} radar images...`);
-                
-                // 2. Fetch all GeoTIFFs in parallel and parse them
-                const frameUrls = result.frames.map(frame => `${API_BASE_URL}${frame.url}`);
-                const georasterPromises = frameUrls.map(url => fetch(url).then(res => res.arrayBuffer()).then(parseGeoraster));
-                
-                radarFrames.georasters = await Promise.all(georasterPromises);
-                radarFrames.times = result.frames.map(frame => frame.time);
-
-                // 3. Setup UI and display the first frame
-                setupAnimationControls();
-                displayFrame(0);
-                map.fitBounds(currentRadarLayer.getBounds());
-                showStatus('Radar animation loaded. Use controls to play.', 'info');
-
-            } catch (error) {
-                showStatus('Failed to load or parse radar data.', 'error');
-                console.error("Radar processing error:", error);
-            } finally {
-                showLoading(false);
-            }
+            document.getElementById('playButton').textContent = 'Stop Animation';
+            animationInterval = setInterval(() => {
+                let nextIndex = (currentIndex + 1) % frames.length;
+                displayFrame(nextIndex);
+            }, 500);
         }
 
-        // --- NEW: Animation Control Functions for georaster-layer-for-leaflet ---
-        function displayFrame(index) {
-            if (index >= radarFrames.georasters.length) return;
-            if (currentRadarLayer) map.removeLayer(currentRadarLayer);
-            
-            animationState.currentIndex = index;
-            
-            currentRadarLayer = new GeoRasterLayer({
-                georaster: radarFrames.georasters[index],
-                opacity: 0.7,
-                pixelValuesToColorFn: values => getRadarColor(values[0]),
-                resolution: 128 // Lower value for better performance
-            });
-            currentRadarLayer.addTo(map);
-
-            // Update UI
-            document.getElementById('frameSlider').value = index;
-            document.getElementById('currentTime').textContent = radarFrames.times[index];
-        }
-
-        function setupAnimationControls() {
-            const controls = document.getElementById('animationControls');
-            const slider = document.getElementById('frameSlider');
-            
-            slider.max = radarFrames.georasters.length - 1;
-            slider.value = 0;
-            
-            slider.oninput = () => {
-                if (animationState.interval) {
-                    clearInterval(animationState.interval);
-                    animationState.interval = null;
-                    document.getElementById('playPause').textContent = '▶️ Play';
-                }
-                displayFrame(parseInt(slider.value));
-            };
-
-            controls.style.display = 'block';
-        }
-
-        function toggleAnimation() {
-            const playPauseBtn = document.getElementById('playPause');
-            if (animationState.interval) {
-                // Pause
-                clearInterval(animationState.interval);
-                animationState.interval = null;
-                playPauseBtn.textContent = '▶️ Play';
-            } else {
-                // Play
-                playPauseBtn.textContent = '⏸️ Pause';
-                animationState.interval = setInterval(() => {
-                    let nextIndex = animationState.currentIndex + 1;
-                    if (nextIndex >= radarFrames.georasters.length) {
-                        nextIndex = 0; // Loop back to the start
-                    }
-                    displayFrame(nextIndex);
-                }, 500); // 500ms delay between frames
-            }
-        }
-
-        // --- Initial Setup ---
         async function fetchRadarStations() {
             try {
                 const response = await fetch(`${API_BASE_URL}/api/nexrad/stations`);
@@ -327,14 +194,120 @@
                 }
             } catch (error) {
                 showStatus('Failed to fetch radar stations. Is the server running?', 'error');
-			}
+            }
         }
 
+        async function fetchAndDisplayFrames() {
+            const station = document.getElementById('station').value;
+            const date = document.getElementById('dateInput').value;
+            const product = document.getElementById('product').value;
+            const startTime = document.getElementById('startTime').value;
+            const endTime = document.getElementById('endTime').value;
+
+            showStatus('Fetching data...');
+            
+            if (animationInterval) {
+                clearInterval(animationInterval);
+                animationInterval = null;
+                document.getElementById('playButton').textContent = 'Play Animation';
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/nexrad/animation_frames?station=${station}&date=${date}&product=${product}&start_time=${startTime}&end_time=${endTime}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    frames = result.frames.sort((a, b) => new Date(`1970/01/01 ${a.time}`) - new Date(`1970/01/01 ${b.time}`));
+                    if (frames.length > 0) {
+                        displayFrame(0);
+                        showStatus(`Successfully fetched ${frames.length} frames.`, 'success');
+                    } else {
+                        showStatus("No data found for this time period.", 'error');
+                    }
+                } else {
+                    showStatus(`Error from server: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Failed to fetch frames: ${error.message}`, 'error');
+                console.error('Fetch error:', error);
+            }
+        }
+
+        // --- SPC Functions ---
+        function getSPCCategoryColor(category) {
+            const colors = {
+                'TORNADO': 'red', 'HAIL': 'green', 'WIND': 'blue',
+                'DAY 1 SLIGHT': '#ff0000', 'DAY 1 MODERATE': '#ff4500', 'DAY 1 HIGH': '#8b0000',
+                'DAY 2 SLIGHT': '#ffa500', 'DAY 2 MODERATE': '#ff8c00', 'DAY 2 HIGH': '#ff4500',
+                'DAY 3 SLIGHT': '#ffd700', 'DAY 3 MODERATE': '#ffc0cb',
+                'MARGINAL': '#90ee90', 'SLIGHT': '#add8e6', 'MODERATE': '#87cefa', 'HIGH': '#00bfff',
+                'ENHANCED': '#ffd700'
+            };
+            return colors[category.toUpperCase()] || 'gray';
+        }
+
+        function updateSPCLayer(geojson) {
+            spcLayerGroup.clearLayers();
+            L.geoJSON(geojson, {
+                style: function(feature) {
+                    return {
+                        color: getSPCCategoryColor(feature.properties.LABEL),
+                        weight: 2,
+                        opacity: 0.7,
+                        fillOpacity: 0.3,
+                        fillColor: getSPCCategoryColor(feature.properties.LABEL)
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    if (feature.properties && feature.properties.LABEL) {
+                        layer.bindPopup(feature.properties.LABEL);
+                    }
+                }
+            }).addTo(spcLayerGroup);
+            map.fitBounds(spcLayerGroup.getBounds());
+        }
+
+        function clearSPCLayers() {
+            spcLayerGroup.clearLayers();
+        }
+
+        async function fetchSPCOutlook() {
+            const date = document.getElementById('spcDate').value;
+            const type = document.getElementById('spcType').value;
+            showStatus(`Fetching SPC ${type} outlook for ${date}...`);
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/spc/outlook?date=${date}&type=${type}`);
+                const result = await response.json();
+                
+                if (result.success) {
+                    if (result.data.features && result.data.features.length > 0) {
+                        updateSPCLayer(result.data);
+                        showStatus(`Successfully fetched SPC ${type} outlook.`, 'success');
+                    } else {
+                        clearSPCLayers();
+                        showStatus("No SPC data found for this date/type.", 'info');
+                    }
+                } else {
+                    showStatus(`Error from server: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showStatus(`Failed to fetch SPC data: ${error.message}`, 'error');
+                console.error('SPC fetch error:', error);
+            }
+        }
+
+        // --- Event Listeners and Initial Setup ---
         document.addEventListener('DOMContentLoaded', () => {
             initMap();
-            fetchRadarStations();
             const today = new Date().toISOString().split('T')[0];
             document.getElementById('dateInput').value = today;
+            document.getElementById('spcDate').value = today;
+
+            fetchRadarStations();
+            document.getElementById('fetchButton').addEventListener('click', fetchAndDisplayFrames);
+            document.getElementById('playButton').addEventListener('click', playAnimation);
+            document.getElementById('spcButton').addEventListener('click', fetchSPCOutlook);
         });
     </script>
 </body>
